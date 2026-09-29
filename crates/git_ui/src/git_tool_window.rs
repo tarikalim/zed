@@ -39,7 +39,7 @@ pub struct GitToolWindow {
 impl GitToolWindow {
     pub fn load(
         workspace: WeakEntity<Workspace>,
-        mut cx: AsyncWindowContext,
+        cx: AsyncWindowContext,
     ) -> Task<anyhow::Result<Entity<Self>>> {
         cx.spawn(async move |cx| {
             workspace.update_in(cx, |workspace_ref, _, cx| {

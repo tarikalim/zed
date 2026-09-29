@@ -147,10 +147,7 @@ impl GitGraph {
                 path_value,
                 this.clone(),
                 |filter| filter.paths.clear(),
-                {
-                    let this = this.clone();
-                    move |window, cx| paths_menu(this.clone(), window, cx)
-                },
+                move |window, cx| paths_menu(this.clone(), window, cx),
             ))
     }
 }
@@ -328,7 +325,6 @@ fn date_menu(this: WeakEntity<GitGraph>, window: &mut Window, cx: &mut App) -> E
 
 fn paths_menu(this: WeakEntity<GitGraph>, window: &mut Window, cx: &mut App) -> Entity<ContextMenu> {
     ContextMenu::build(window, cx, move |menu, _, _| {
-        let this = this.clone();
         menu.entry("Select Folders…", None, move |_, cx| {
             let Some(repository) = this
                 .read_with(cx, |this, cx| this.get_repository(cx))

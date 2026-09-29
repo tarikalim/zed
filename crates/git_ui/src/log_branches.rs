@@ -1,7 +1,7 @@
 use super::*;
 use crate::{branch_diff::BranchDiff, log_actions};
 use collections::HashSet;
-use git::repository::{Branch, LogFilter};
+use git::repository::LogFilter;
 use gpui::{MouseDownEvent, PromptLevel};
 use std::str::FromStr as _;
 use ui::ContextMenuEntry;
@@ -30,8 +30,8 @@ impl Default for BranchesPaneState {
 #[derive(Clone)]
 enum RefKind {
     Head,
-    Local(Branch),
-    Remote(Branch),
+    Local,
+    Remote,
     Tag,
 }
 
@@ -129,7 +129,7 @@ impl GitGraph {
             .iter()
             .filter(|branch| !branch.is_remote())
             .map(|branch| RefRow {
-                kind: RefKind::Local(branch.clone()),
+                kind: RefKind::Local,
                 name: branch.name().to_string().into(),
                 sha: branch.most_recent_commit.as_ref().map(|commit| commit.sha.clone()),
             })
@@ -141,7 +141,7 @@ impl GitGraph {
             .iter()
             .filter(|branch| branch.is_remote())
             .map(|branch| RefRow {
-                kind: RefKind::Remote(branch.clone()),
+                kind: RefKind::Remote,
                 name: branch.name().to_string().into(),
                 sha: branch.most_recent_commit.as_ref().map(|commit| commit.sha.clone()),
             })
@@ -203,7 +203,7 @@ impl GitGraph {
             } => {
                 let icon = match row.kind {
                     RefKind::Head => IconName::GitBranch,
-                    RefKind::Local(_) | RefKind::Remote(_) => IconName::GitBranch,
+                    RefKind::Local | RefKind::Remote => IconName::GitBranch,
                     RefKind::Tag => IconName::Bookmark,
                 };
                 let click_entity = entity.clone();
@@ -323,8 +323,8 @@ impl GitGraph {
                             }
                         }
                     }),
-                RefKind::Local(_) | RefKind::Remote(_) | RefKind::Tag => {
-                    let is_remote = matches!(row.kind, RefKind::Remote(_));
+                RefKind::Local | RefKind::Remote | RefKind::Tag => {
+                    let is_remote = matches!(row.kind, RefKind::Remote);
                     let is_tag = matches!(row.kind, RefKind::Tag);
                     let checkout_args = if is_remote {
                         vec!["switch".into(), "--track".into(), name.to_string()]

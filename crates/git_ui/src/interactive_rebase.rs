@@ -711,6 +711,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn test_rebase_with_real_git() {
         let repo = tempfile::tempdir().unwrap();
         let path = repo.path();

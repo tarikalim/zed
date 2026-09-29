@@ -148,7 +148,6 @@ pub(crate) fn jetbrains_log_entries(
         }
     })
     .entry_disabled_when(!is_local, "New Tag…", {
-        let workspace = workspace.clone();
         let repository = repository.clone();
         move |window, cx| {
             let repository = repository.clone();

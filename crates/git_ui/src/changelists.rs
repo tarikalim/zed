@@ -132,19 +132,6 @@ impl Changelists {
         }
         self.save();
     }
-
-    /// Forgets paths that no longer have changes, as JetBrains does after a commit.
-    pub(crate) fn retain_changed(&mut self, is_changed: impl Fn(&str) -> bool) {
-        let mut changed = false;
-        for list in &mut self.lists {
-            let before = list.paths.len();
-            list.paths.retain(|path| is_changed(path));
-            changed |= list.paths.len() != before;
-        }
-        if changed {
-            self.save();
-        }
-    }
 }
 
 /// Name prompt used by New Changelist and Rename Changelist.

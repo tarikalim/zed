@@ -48,7 +48,7 @@ pub(crate) fn load(git_dir: &Path) -> Vec<ShelvedChangelist> {
             Some(shelved)
         })
         .collect();
-    shelved.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    shelved.sort_by_key(|shelved| std::cmp::Reverse(shelved.timestamp));
     shelved
 }
 
