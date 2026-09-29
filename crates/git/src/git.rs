@@ -87,6 +87,8 @@ actions!(
         StashTracked,
         /// Stashes staged changes in the repository, leaving unstaged changes in place.
         StashStaged,
+        /// Opens the GitHub Pull Requests view.
+        OpenPullRequests,
         /// Continues a stopped rebase.
         ContinueRebase,
         /// Aborts the rebase in progress.

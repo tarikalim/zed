@@ -51,6 +51,7 @@ mod conflicts_dialog;
 mod interactive_rebase;
 mod log_actions;
 mod merge_tool;
+mod pull_requests;
 mod shelf;
 mod stash_dialogs;
 pub mod multi_diff_view;
@@ -215,6 +216,7 @@ pub fn init(cx: &mut App) {
             });
             stash_dialogs::register(workspace);
             conflicts_dialog::register(workspace);
+            pull_requests::register(workspace);
             workspace.register_action(|workspace, _: &git::ContinueRebase, window, cx| {
                 run_rebase_command(workspace, &["-c", "core.editor=true", "rebase", "--continue"], window, cx)
             });
