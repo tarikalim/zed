@@ -661,6 +661,20 @@ pub enum ResetMode {
     /// Reset the branch pointer and index, leave worktree unchanged (this makes it look as though things that were
     /// committed are now unstaged).
     Mixed,
+    /// Reset the branch pointer, index and worktree, discarding all local changes.
+    Hard,
+    /// Like `Hard`, but abort if a file that differs between HEAD and the target has local changes.
+    Keep,
+}
+
+/// Operations run against a single commit from the log.
+#[derive(Debug, Clone)]
+pub enum CommitOperation {
+    CherryPick,
+    Revert,
+    Checkout,
+    CreateTag { name: String },
+    CreateBranch { name: String },
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -913,6 +927,13 @@ pub trait GitRepository: Send + Sync {
         &self,
         commit: String,
         paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    fn run_commit_operation(
+        &self,
+        commit: String,
+        operation: CommitOperation,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
 
@@ -1572,6 +1593,8 @@ impl GitRepository for RealGitRepository {
             let mode_flag = match mode {
                 ResetMode::Mixed => "--mixed",
                 ResetMode::Soft => "--soft",
+                ResetMode::Hard => "--hard",
+                ResetMode::Keep => "--keep",
             };
 
             let output = git
@@ -1611,6 +1634,35 @@ impl GitRepository for RealGitRepository {
             anyhow::ensure!(
                 output.status.success(),
                 "Failed to checkout files:\n{}",
+                String::from_utf8_lossy(&output.stderr),
+            );
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn run_commit_operation(
+        &self,
+        commit: String,
+        operation: CommitOperation,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        async move {
+            let git = git?;
+            let (args, label): (Vec<&str>, &str) = match &operation {
+                CommitOperation::CherryPick => (vec!["cherry-pick", &commit], "cherry-pick"),
+                CommitOperation::Revert => (vec!["revert", "--no-edit", &commit], "revert"),
+                CommitOperation::Checkout => (vec!["checkout", "--detach", &commit], "checkout"),
+                CommitOperation::CreateTag { name } => (vec!["tag", name, &commit], "create tag"),
+                CommitOperation::CreateBranch { name } => {
+                    (vec!["branch", name, &commit], "create branch")
+                }
+            };
+            let output = git.build_command(&args).envs(env.iter()).output().await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "Failed to {label}:\n{}",
                 String::from_utf8_lossy(&output.stderr),
             );
             Ok(())
@@ -4452,6 +4504,66 @@ mod tests {
             original_repo_path_from_common_dir(&repository.common_dir).unwrap(),
             repo_dir.path(),
         );
+    }
+
+    #[gpui::test]
+    async fn test_commit_operations_and_reset_modes(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        git_init_repo(path);
+        let file_path = path.join("file.txt");
+        let commit = |text: &str, message: &str| {
+            fs::write(&file_path, text).unwrap();
+            git_command(path, ["add", "file.txt"]);
+            git_command(path, ["commit", "-m", message]);
+            git_command_output(path, ["rev-parse", "HEAD"])
+        };
+        let first = commit("one\n", "first");
+        let second = commit("two\n", "second");
+        let repository =
+            RealGitRepository::new(&path.join(".git"), None, Some("git".into()), cx.executor())
+                .unwrap();
+        let env = Arc::new(HashMap::default());
+        let run = |operation| repository.run_commit_operation(second.clone(), operation, env.clone());
+
+        run(CommitOperation::CreateTag { name: "v1".into() }).await.unwrap();
+        assert_eq!(git_command_output(path, ["rev-parse", "v1"]), second);
+
+        run(CommitOperation::CreateBranch { name: "topic".into() }).await.unwrap();
+        assert_eq!(git_command_output(path, ["rev-parse", "topic"]), second);
+
+        run(CommitOperation::Revert).await.unwrap();
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "one\n");
+
+        repository
+            .reset(second.clone(), ResetMode::Hard, env.clone())
+            .await
+            .unwrap();
+        assert_eq!(git_command_output(path, ["rev-parse", "HEAD"]), second);
+
+        fs::write(&file_path, "dirty\n").unwrap();
+        repository
+            .reset(first.clone(), ResetMode::Keep, env.clone())
+            .await
+            .expect_err("keep must refuse to drop local changes to a file the reset touches");
+        repository
+            .reset(first.clone(), ResetMode::Hard, env.clone())
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "one\n");
+
+        run(CommitOperation::CherryPick).await.unwrap();
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "two\n");
+
+        repository
+            .run_commit_operation(first.clone(), CommitOperation::Checkout, env.clone())
+            .await
+            .unwrap();
+        assert_eq!(git_command_output(path, ["rev-parse", "HEAD"]), first);
+        assert_eq!(git_command_output(path, ["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
     }
 
     #[gpui::test]

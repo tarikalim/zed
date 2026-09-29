@@ -15,7 +15,7 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
+        CommitOperation, PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
         commit_hash_search_query,
     },
     stash::GitStash,
@@ -457,7 +457,8 @@ impl GitRepository for FakeGitRepository {
                 ResetMode::Soft => {
                     state.head_contents = snapshot.head_contents;
                 }
-                ResetMode::Mixed => {
+                // ponytail: the fake has no worktree contents, so Hard and Keep behave like Mixed.
+                ResetMode::Mixed | ResetMode::Hard | ResetMode::Keep => {
                     state.head_contents = snapshot.head_contents;
                     state.index_contents = state.head_contents.clone();
                 }
@@ -466,6 +467,15 @@ impl GitRepository for FakeGitRepository {
             state.refs.insert("HEAD".into(), snapshot.sha);
             Ok(())
         })
+    }
+
+    fn run_commit_operation(
+        &self,
+        _commit: String,
+        _operation: CommitOperation,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        unimplemented!()
     }
 
     fn checkout_files(

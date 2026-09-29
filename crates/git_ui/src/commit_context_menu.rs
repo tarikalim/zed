@@ -55,10 +55,20 @@ pub(crate) fn commit_context_menu(
         None => format!("Commit {sha_short}"),
     };
 
-    ContextMenu::build(window, cx, move |context_menu, _, _| {
+    ContextMenu::build(window, cx, move |context_menu, _, cx| {
         context_menu
             .context(focus_handle)
             .header(header)
+            .map(|menu| {
+                crate::log_actions::jetbrains_log_entries(
+                    menu,
+                    sha,
+                    repository.clone(),
+                    workspace.clone(),
+                    cx,
+                )
+            })
+            .separator()
             .entry("View Diff", Some(OpenCommitView.boxed_clone()), {
                 let repository = repository.clone();
                 let workspace = workspace.clone();
@@ -77,13 +87,6 @@ pub(crate) fn commit_context_menu(
                     );
                 }
             })
-            .entry(
-                "Copy SHA",
-                Some(CopyCommitSha.boxed_clone()),
-                move |_window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(sha.to_string()));
-                },
-            )
             .when_some(ref_name.clone(), |menu, ref_name| {
                 menu.entry("Copy Ref Name", None, move |_window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(ref_name.to_string()));
