@@ -220,7 +220,7 @@ pub fn init(cx: &mut App) {
             conflicts_dialog::register(workspace);
             pull_requests::register(workspace);
             workspace.register_action(|workspace, _: &git::ContinueRebase, window, cx| {
-                run_rebase_command(workspace, &["-c", "core.editor=true", "rebase", "--continue"], window, cx)
+                run_rebase_command(workspace, &["rebase", "--continue"], window, cx)
             });
             workspace.register_action(|workspace, _: &git::AbortRebase, window, cx| {
                 run_rebase_command(workspace, &["rebase", "--abort"], window, cx)
@@ -415,7 +415,9 @@ fn run_rebase_command(
         return;
     };
     let args = args.iter().map(|arg| arg.to_string()).collect();
-    let receiver = repository.update(cx, |repository, cx| repository.run_git_command(args, cx));
+    let receiver = repository.update(cx, |repository, cx| {
+        repository.run_git_command_with_env(args, interactive_rebase::non_interactive_env(None), cx)
+    });
     log_actions::spawn_git_job(receiver, "Rebase failed", window, cx);
 }
 

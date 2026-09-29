@@ -227,13 +227,9 @@ fn fixup_commit(
     };
     let flag = if squash { "--squash" } else { "--fixup" };
     let receiver = repository.update(cx, |repository, cx| {
-        repository.run_git_command(
-            vec![
-                "-c".into(),
-                "core.editor=true".into(),
-                "commit".into(),
-                format!("{flag}={sha}"),
-            ],
+        repository.run_git_command_with_env(
+            vec!["commit".into(), format!("{flag}={sha}")],
+            interactive_rebase::non_interactive_env(None),
             cx,
         )
     });
@@ -258,24 +254,42 @@ fn push_up_to(repository: &WeakEntity<Repository>, sha: Oid, window: &mut Window
         .detach_and_prompt_err("Push failed", window, cx, |_, _, _| None);
         return;
     };
-    interactive_rebase::confirm_then(
-        format!(
-            "Push commits up to {} to {remote}/{remote_branch}?",
-            sha.display_short()
-        ),
-        "Push",
-        window,
-        cx,
-        move |window, cx| {
-            let receiver = repository.update(cx, |repository, cx| {
-                repository.run_git_command(
-                    vec!["push".into(), remote, format!("{sha}:refs/heads/{remote_branch}")],
-                    cx,
-                )
-            });
-            spawn_git_job(receiver, "Push failed", window, cx);
-        },
-    );
+    let is_ancestor = repository.update(cx, |repository, _| {
+        repository.git_output(vec![
+            "merge-base".into(),
+            "--is-ancestor".into(),
+            sha.to_string(),
+            "HEAD".into(),
+        ])
+    });
+    let task: Task<anyhow::Result<()>> = window.spawn(cx, async move |cx| {
+        // Pushing a commit from another branch to this branch's upstream would publish unrelated history.
+        anyhow::ensure!(
+            is_ancestor.await?.is_ok(),
+            "The commit is not in the current branch."
+        );
+        cx.update(|window, cx| {
+            interactive_rebase::confirm_then(
+                format!(
+                    "Push commits up to {} to {remote}/{remote_branch}?",
+                    sha.display_short()
+                ),
+                "Push",
+                window,
+                cx,
+                move |window, cx| {
+                    let receiver = repository.update(cx, |repository, cx| {
+                        repository.run_git_command(
+                            vec!["push".into(), remote, format!("{sha}:refs/heads/{remote_branch}")],
+                            cx,
+                        )
+                    });
+                    spawn_git_job(receiver, "Push failed", window, cx);
+                },
+            )
+        })
+    });
+    task.detach_and_prompt_err("Push failed", window, cx, |_, _, _| None);
 }
 
 fn open_modal<V: ModalView>(
@@ -320,7 +334,24 @@ pub(crate) fn spawn_git_job<T: 'static>(
                     .iter()
                     .any(|marker| message.contains(marker))
                 {
-                    window.dispatch_action(Box::new(git::ResolveConflicts), cx);
+                    // Keep git's message visible; the dialog opens on request, once the status scan caught up.
+                    let answer = window.prompt(
+                        gpui::PromptLevel::Warning,
+                        "Conflicts",
+                        Some(&message),
+                        &["Resolve…", "Close"],
+                        cx,
+                    );
+                    window
+                        .spawn(cx, async move |cx| {
+                            if answer.await == Ok(0) {
+                                cx.update(|window, cx| {
+                                    window.dispatch_action(Box::new(git::ResolveConflicts), cx)
+                                })
+                                .ok();
+                            }
+                        })
+                        .detach();
                 } else {
                     let task: Task<anyhow::Result<()>> = Task::ready(Err(error));
                     task.detach_and_prompt_err(&error_title, window, cx, |_, _, _| None);

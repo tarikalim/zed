@@ -124,9 +124,12 @@ pub(crate) fn open(
             repository.git_output(vec!["show".into(), spec])
         })
     };
+    // During a rebase git's stage 2 is the branch being rebased onto; the user's own commit is stage 3.
+    let rebasing = crate::conflicts_dialog::is_rebasing(&repository.read(cx).repository_dir_abs_path);
+    let (yours_stage, theirs_stage) = if rebasing { (3, 2) } else { (2, 3) };
     let base = show(1, &repository, cx);
-    let ours = show(2, &repository, cx);
-    let theirs = show(3, &repository, cx);
+    let ours = show(yours_stage, &repository, cx);
+    let theirs = show(theirs_stage, &repository, cx);
     let (current_branch, incoming) = {
         let repository = repository.read(cx);
         let incoming = repository
@@ -148,8 +151,13 @@ pub(crate) fn open(
     let task = cx.spawn_in(window, async move |workspace, cx| {
         // An add/add conflict has no base stage.
         let base = base.await?.unwrap_or_default();
-        let ours = ours.await?.context("no 'yours' version (stage 2) for this file")?;
-        let theirs = theirs.await?.context("no 'theirs' version (stage 3) for this file")?;
+        let ours = ours.await?.context("this side deleted the file; use Accept Yours or Accept Theirs")?;
+        let theirs = theirs.await?.context("this side deleted the file; use Accept Yours or Accept Theirs")?;
+        // Text is read lossily; applying a lossy result would corrupt non-UTF-8 files.
+        anyhow::ensure!(
+            ![&base, &ours, &theirs].iter().any(|text| text.contains('\u{FFFD}')),
+            "The merge tool only supports UTF-8 text files; use Accept Yours or Accept Theirs"
+        );
         let language = languages
             .load_language_for_file_path(&path_for_language)
             .await
@@ -166,8 +174,17 @@ pub(crate) fn open(
                         ours,
                         theirs,
                         language,
-                        left_label: current_branch.unwrap_or_else(|| "yours".into()),
-                        right_label: incoming.unwrap_or_else(|| "theirs".into()),
+                        left_label: if rebasing {
+                            "your commit".into()
+                        } else {
+                            current_branch.clone().unwrap_or_else(|| "yours".into())
+                        },
+                        right_label: if rebasing {
+                            current_branch.unwrap_or_else(|| "upstream".into())
+                        } else {
+                            incoming.unwrap_or_else(|| "theirs".into())
+                        },
+                        rebasing,
                     },
                     window,
                     cx,
@@ -190,6 +207,7 @@ struct MergeInput {
     language: Option<Arc<language::Language>>,
     left_label: SharedString,
     right_label: SharedString,
+    rebasing: bool,
 }
 
 struct Conflict {
@@ -222,6 +240,7 @@ pub(crate) struct MergeTool {
     block_ids: HashSet<CustomBlockId>,
     left_label: SharedString,
     right_label: SharedString,
+    rebasing: bool,
     focus_handle: FocusHandle,
 }
 
@@ -298,7 +317,8 @@ impl MergeTool {
             .into_iter()
             .zip(conflicts_text)
             .map(|(points, (ours_text, theirs_text, left_rows, right_rows))| Conflict {
-                result: snapshot.anchor_before(points.start)..snapshot.anchor_after(points.end),
+                // Both ends bias left so typing at the start of the following line stays outside.
+                result: snapshot.anchor_before(points.start)..snapshot.anchor_before(points.end),
                 ours_text,
                 theirs_text,
                 left_rows,
@@ -320,6 +340,7 @@ impl MergeTool {
             block_ids: HashSet::default(),
             left_label: input.left_label,
             right_label: input.right_label,
+            rebasing: input.rebasing,
             focus_handle: cx.focus_handle(),
         };
         this.refresh_decorations(cx);
@@ -428,16 +449,22 @@ impl MergeTool {
     }
 
     fn accept_side_for_file(&mut self, left: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let flag = if left { "--ours" } else { "--theirs" };
-        self.finish(
-            vec![
-                vec!["checkout".into(), flag.into(), "--".into(), self.repo_path.as_unix_str().into()],
-                vec!["add".into(), "--".into(), self.repo_path.as_unix_str().into()],
-            ],
-            None,
-            window,
-            cx,
-        );
+        // The left pane is git's "ours", except during a rebase where the panes are swapped.
+        let ours = left != self.rebasing;
+        let task = crate::conflicts_dialog::accept_side(&self.repository, self.repo_path.clone(), ours, cx);
+        let workspace = self.workspace.clone();
+        let item_id = cx.entity_id();
+        cx.spawn_in(window, async move |_, cx| {
+            task.await?;
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.active_pane().update(cx, |pane, cx| {
+                    pane.close_item_by_id(item_id, workspace::SaveIntent::Skip, window, cx)
+                        .detach_and_log_err(cx);
+                });
+            })?;
+            anyhow::Ok(())
+        })
+        .detach_and_notify_err(self.workspace.clone(), window, cx);
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -741,6 +768,7 @@ mod view_tests {
                     language: None,
                     left_label: "main".into(),
                     right_label: "feature".into(),
+                    rebasing: false,
                 },
                 window,
                 cx,

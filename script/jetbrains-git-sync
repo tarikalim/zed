@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Rebases the jetbrains-git branch onto the latest upstream Zed and pushes it to the fork.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+git fetch upstream main
+git rebase upstream/main jetbrains-git
+git push --force-with-lease origin jetbrains-git
+echo "Rebased onto $(git rev-parse --short upstream/main). Run script/jetbrains-git-install to rebuild."

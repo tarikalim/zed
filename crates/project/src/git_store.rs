@@ -7176,13 +7176,32 @@ impl Repository {
 
     // ponytail: local repositories only; add a proto message when remote projects need it.
     pub fn git_output(&mut self, args: Vec<String>) -> oneshot::Receiver<Result<String>> {
+        self.git_output_with_env(args, Vec::new())
+    }
+
+    /// Like [`Self::git_output`] with extra environment variables, which take precedence over
+    /// the project environment (e.g. `GIT_SEQUENCE_EDITOR`, which beats `-c sequence.editor`).
+    pub fn git_output_with_env(
+        &mut self,
+        args: Vec<String>,
+        extra_env: Vec<(String, String)>,
+    ) -> oneshot::Receiver<Result<String>> {
         self.send_job("git", None, move |git_repo, _| async move {
             match git_repo {
                 RepositoryState::Local(LocalRepositoryState {
                     backend,
                     environment,
                     ..
-                }) => backend.git_output(args, environment).await,
+                }) => {
+                    let environment = if extra_env.is_empty() {
+                        environment
+                    } else {
+                        let mut environment = (*environment).clone();
+                        environment.extend(extra_env);
+                        Arc::new(environment)
+                    };
+                    backend.git_output(args, environment).await
+                }
                 RepositoryState::Remote(_) => {
                     anyhow::bail!("This operation is not supported in remote projects yet")
                 }
@@ -7196,7 +7215,16 @@ impl Repository {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<String>> {
-        let receiver = self.git_output(args);
+        self.run_git_command_with_env(args, Vec::new(), cx)
+    }
+
+    pub fn run_git_command_with_env(
+        &mut self,
+        args: Vec<String>,
+        extra_env: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<Result<String>> {
+        let receiver = self.git_output_with_env(args, extra_env);
         let scan_updates_tx =
             self.git_store()
                 .and_then(|git_store| match &git_store.read(cx).state {

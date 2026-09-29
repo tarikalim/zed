@@ -42,12 +42,22 @@ impl GitToolWindow {
         mut cx: AsyncWindowContext,
     ) -> Task<anyhow::Result<Entity<Self>>> {
         cx.spawn(async move |cx| {
-            workspace.update_in(cx, |_, _, cx| {
-                cx.new(|cx| Self {
-                    workspace: workspace.clone(),
-                    log: None,
-                    position: DockPosition::Bottom,
-                    focus_handle: cx.focus_handle(),
+            workspace.update_in(cx, |workspace_ref, _, cx| {
+                let git_store = workspace_ref.project().read(cx).git_store().clone();
+                cx.new(|cx| {
+                    // Re-render when the active repository changes so the Log follows it.
+                    cx.subscribe(&git_store, |_, _, event, cx| {
+                        if matches!(event, project::git_store::GitStoreEvent::ActiveRepositoryChanged(_)) {
+                            cx.notify();
+                        }
+                    })
+                    .detach();
+                    Self {
+                        workspace: workspace.clone(),
+                        log: None,
+                        position: DockPosition::Bottom,
+                        focus_handle: cx.focus_handle(),
+                    }
                 })
             })
         })

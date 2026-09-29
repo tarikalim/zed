@@ -81,13 +81,26 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-fn rebase_args(todo_path: &std::path::Path, base: Option<String>) -> Vec<String> {
-    vec![
-        "-c".to_string(),
-        format!("sequence.editor=cp {}", shell_quote(&todo_path.to_string_lossy())),
+/// Environment that makes git non-interactive; env vars win over `-c` and user config.
+pub(crate) fn non_interactive_env(todo_path: Option<&std::path::Path>) -> Vec<(String, String)> {
+    let mut env = vec![
         // Squash would otherwise open an editor for the combined message; keep git's default.
-        "-c".into(),
-        "core.editor=true".into(),
+        ("GIT_EDITOR".to_string(), "true".to_string()),
+    ];
+    if let Some(todo_path) = todo_path {
+        env.push((
+            "GIT_SEQUENCE_EDITOR".into(),
+            format!("cp {}", shell_quote(&todo_path.to_string_lossy())),
+        ));
+    }
+    env
+}
+
+fn rebase_args(base: Option<String>) -> Vec<String> {
+    vec![
+        // A todo that misses a commit must fail rather than silently drop it.
+        "-c".to_string(),
+        "rebase.missingCommitsCheck=error".into(),
         "rebase".into(),
         "-i".into(),
         "--autostash".into(),
@@ -95,41 +108,60 @@ fn rebase_args(todo_path: &std::path::Path, base: Option<String>) -> Vec<String>
     ]
 }
 
+/// The commits of an interactive rebase and the HEAD they were read at.
+#[derive(Clone)]
+pub(crate) struct RebasePlan {
+    pub(crate) base: Option<String>,
+    pub(crate) head: String,
+    pub(crate) entries: Vec<RebaseEntry>,
+}
+
 static REBASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Runs `git rebase -i` with a todo generated from `entries`; `base` is the commit before the
-/// first entry, or `None` to rebase from the root.
+/// Runs `git rebase -i` with a todo generated from the plan, refusing if HEAD moved since the
+/// plan was read (the todo would otherwise drop the new commits).
 pub(crate) fn run_interactive_rebase(
     repository: &Entity<Repository>,
-    base: Option<String>,
-    entries: Vec<RebaseEntry>,
+    plan: RebasePlan,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let result = (|| -> anyhow::Result<Vec<String>> {
+    let current_head = repository.update(cx, |repository, _| {
+        repository.git_output(vec!["rev-parse".into(), "HEAD".into()])
+    });
+    let repository = repository.clone();
+    let task: Task<anyhow::Result<String>> = window.spawn(cx, async move |cx| {
+        let current_head = current_head.await??;
+        anyhow::ensure!(
+            current_head.trim() == plan.head,
+            "The branch changed since the rebase was prepared. Open the dialog again."
+        );
         let directory = std::env::temp_dir().join(format!(
             "zed-rebase-{}-{}",
             std::process::id(),
             REBASE_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&directory)?;
-        let (todo, messages) = build_todo(&entries, &directory);
+        let (todo, messages) = build_todo(&plan.entries, &directory);
         let todo_path = directory.join("git-rebase-todo");
         std::fs::write(&todo_path, todo)?;
         for (path, message) in messages {
             std::fs::write(path, message)?;
         }
-        Ok(rebase_args(&todo_path, base))
-    })();
-    match result {
-        Ok(args) => {
-            let receiver = repository.update(cx, |repository, cx| repository.run_git_command(args, cx));
-            spawn_git_job(receiver, "Rebase failed", window, cx);
-        }
-        Err(error) => {
-            Task::ready(Err::<(), _>(error)).detach_and_prompt_err("Rebase failed", window, cx, |_, _, _| None);
-        }
-    }
+        let receiver = repository.update(cx, |repository, cx| {
+            repository.run_git_command_with_env(
+                rebase_args(plan.base),
+                non_interactive_env(Some(&todo_path)),
+                cx,
+            )
+        });
+        receiver.await?
+    });
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    window
+        .spawn(cx, async move |_| sender.send(task.await).ok())
+        .detach();
+    spawn_git_job(receiver, "Rebase failed", window, cx);
 }
 
 const FIELD: char = '\u{1f}';
@@ -140,7 +172,7 @@ pub(crate) fn load_entries(
     repository: &Entity<Repository>,
     sha: Oid,
     cx: &mut App,
-) -> Task<anyhow::Result<(Option<String>, Vec<RebaseEntry>)>> {
+) -> Task<anyhow::Result<RebasePlan>> {
     let sha = sha.to_string();
     let is_ancestor = repository.update(cx, |repository, _| {
         repository.git_output(vec![
@@ -149,6 +181,9 @@ pub(crate) fn load_entries(
             sha.clone(),
             "HEAD".into(),
         ])
+    });
+    let head = repository.update(cx, |repository, _| {
+        repository.git_output(vec!["rev-parse".into(), "HEAD".into()])
     });
     let parent = repository.update(cx, |repository, _| {
         repository.git_output(vec!["rev-parse".into(), "--verify".into(), "--quiet".into(), format!("{sha}^")])
@@ -159,6 +194,7 @@ pub(crate) fn load_entries(
             is_ancestor.await?.is_ok(),
             "The commit is not in the current branch."
         );
+        let head = head.await??.trim().to_string();
         let base = parent.await?.ok().map(|output| output.trim().to_string());
         let range = match &base {
             Some(base) => format!("{base}..HEAD"),
@@ -200,7 +236,7 @@ pub(crate) fn load_entries(
             });
         }
         anyhow::ensure!(!entries.is_empty(), "No commits to rebase.");
-        Ok((base, entries))
+        Ok(RebasePlan { base, head, entries })
     })
 }
 
@@ -213,10 +249,10 @@ pub(crate) fn open_rebase_dialog(
 ) {
     let entries = load_entries(&repository, sha, cx);
     let task = window.spawn(cx, async move |cx| {
-        let (base, entries) = entries.await?;
+        let plan = entries.await?;
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.toggle_modal(window, cx, |window, cx| {
-                InteractiveRebaseModal::new(repository, base, entries, window, cx)
+                InteractiveRebaseModal::new(repository, plan, window, cx)
             })
         })
     });
@@ -235,14 +271,14 @@ pub(crate) fn rebase_single_commit(
     let entries = load_entries(&repository, sha, cx);
     let target = sha.to_string();
     let task = window.spawn(cx, async move |cx| {
-        let (base, mut entries) = entries.await?;
-        for entry in &mut entries {
+        let mut plan = entries.await?;
+        for entry in &mut plan.entries {
             if entry.sha == target {
                 entry.action = action;
                 entry.new_message = new_message.clone();
             }
         }
-        cx.update(|window, cx| run_interactive_rebase(&repository, base, entries, window, cx))?;
+        cx.update(|window, cx| run_interactive_rebase(&repository, plan, window, cx))?;
         anyhow::Ok(())
     });
     task.detach_and_prompt_err("Rebase failed", window, cx, |_, _, _| None);
@@ -251,6 +287,7 @@ pub(crate) fn rebase_single_commit(
 pub(crate) struct InteractiveRebaseModal {
     repository: Entity<Repository>,
     base: Option<String>,
+    head: String,
     original: Vec<RebaseEntry>,
     entries: Vec<RebaseEntry>,
     selected: usize,
@@ -261,19 +298,27 @@ pub(crate) struct InteractiveRebaseModal {
 impl InteractiveRebaseModal {
     fn new(
         repository: Entity<Repository>,
-        base: Option<String>,
-        entries: Vec<RebaseEntry>,
+        plan: RebasePlan,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             repository,
-            base,
-            original: entries.clone(),
-            entries,
+            base: plan.base,
+            head: plan.head,
+            original: plan.entries.clone(),
+            entries: plan.entries,
             selected: 0,
             message_editor: None,
             focus_handle: cx.focus_handle(),
+        }
+    }
+
+    fn plan(&self) -> RebasePlan {
+        RebasePlan {
+            base: self.base.clone(),
+            head: self.head.clone(),
+            entries: self.entries.clone(),
         }
     }
 
@@ -354,7 +399,7 @@ impl InteractiveRebaseModal {
         if self.validation_error().is_some() {
             return;
         }
-        run_interactive_rebase(&self.repository, self.base.clone(), self.entries.clone(), window, cx);
+        run_interactive_rebase(&self.repository, self.plan(), window, cx);
         cx.emit(DismissEvent);
     }
 
@@ -511,13 +556,7 @@ impl Render for InteractiveRebaseModal {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.store_message(cx);
                                         if this.validation_error().is_none() {
-                                            run_interactive_rebase(
-                                                &this.repository,
-                                                this.base.clone(),
-                                                this.entries.clone(),
-                                                window,
-                                                cx,
-                                            );
+                                            run_interactive_rebase(&this.repository, this.plan(), window, cx);
                                             cx.emit(DismissEvent);
                                         }
                                     })),
@@ -710,8 +749,21 @@ mod tests {
         for (message_path, message) in messages {
             std::fs::write(message_path, message).unwrap();
         }
-        let args = rebase_args(&todo_path, Some(shas[0].clone()));
-        git(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        let args = rebase_args(Some(shas[0].clone()));
+        let mut command = std::process::Command::new("git");
+        command
+            .args(&args)
+            .current_dir(path)
+            .env("GIT_CONFIG_GLOBAL", "")
+            // A user editor in the environment must not win over ours.
+            .env("GIT_SEQUENCE_EDITOR", ":")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t");
+        for (key, value) in non_interactive_env(Some(&todo_path)) {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 
         assert_eq!(git(&["log", "--format=%s"]), "two, reworded\none\n");
         assert_eq!(git(&["ls-tree", "--name-only", "HEAD"]), "one\nthree\ntwo\n");

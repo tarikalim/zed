@@ -14,6 +14,55 @@ pub(crate) fn register(workspace: &mut Workspace) {
     });
 }
 
+// ponytail: checks the rebase dirs on disk; move to the repository snapshot if it is needed elsewhere.
+/// Whether a rebase is stopped. `rebase-apply` without `applying` is a rebase; with it, `git am`.
+pub(crate) fn is_rebasing(git_dir: &std::path::Path) -> bool {
+    git_dir.join(git::REBASE_MERGE_DIR).exists()
+        || (git_dir.join("rebase-apply").exists() && !git_dir.join("rebase-apply/applying").exists())
+}
+
+/// Resolves a conflicted file with git's `ours` (stage 2) or `theirs` (stage 3) version; when that
+/// side deleted the file, the deletion is accepted instead.
+pub(crate) fn accept_side(
+    repository: &Entity<Repository>,
+    path: RepoPath,
+    ours: bool,
+    cx: &mut App,
+) -> Task<anyhow::Result<()>> {
+    let path = path.as_unix_str().to_string();
+    let stage = if ours { 2 } else { 3 };
+    let exists = repository.update(cx, |repository, _| {
+        repository.git_output(vec![
+            "rev-parse".into(),
+            "--quiet".into(),
+            "--verify".into(),
+            format!(":{stage}:{path}"),
+        ])
+    });
+    let repository = repository.clone();
+    cx.spawn(async move |cx| {
+        let commands: Vec<Vec<String>> = if exists.await?.is_ok() {
+            vec![
+                vec![
+                    "checkout".into(),
+                    if ours { "--ours" } else { "--theirs" }.into(),
+                    "--".into(),
+                    path.clone(),
+                ],
+                vec!["add".into(), "--".into(), path],
+            ]
+        } else {
+            vec![vec!["rm".into(), "--quiet".into(), "--".into(), path]]
+        };
+        for args in commands {
+            repository
+                .update(cx, |repository, cx| repository.run_git_command(args, cx))
+                .await??;
+        }
+        Ok(())
+    })
+}
+
 pub(crate) fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let Some(repository) = workspace.project().read(cx).active_repository(cx) else {
         return;
@@ -33,6 +82,7 @@ enum Side {
 struct ConflictsModal {
     repository: Entity<Repository>,
     workspace: WeakEntity<Workspace>,
+    saw_conflicts: bool,
     selected: usize,
     focus_handle: FocusHandle,
 }
@@ -44,22 +94,33 @@ impl ConflictsModal {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&repository, |this, _, cx| {
-            if this.conflicts(cx).is_empty() {
+            // The status scan may lag the git command that opened this dialog, so only close
+            // once conflicts were shown and are now all resolved.
+            let has_conflicts = !this.conflicts(cx).is_empty();
+            if has_conflicts {
+                this.saw_conflicts = true;
+            } else if this.saw_conflicts {
                 cx.emit(DismissEvent);
             }
             cx.notify();
         })
         .detach();
+        let saw_conflicts = !Self::conflicts_of(&repository, cx).is_empty();
         Self {
             repository,
             workspace,
+            saw_conflicts,
             selected: 0,
             focus_handle: cx.focus_handle(),
         }
     }
 
     fn conflicts(&self, cx: &App) -> Vec<RepoPath> {
-        self.repository
+        Self::conflicts_of(&self.repository, cx)
+    }
+
+    fn conflicts_of(repository: &Entity<Repository>, cx: &App) -> Vec<RepoPath> {
+        repository
             .read(cx)
             .cached_status()
             .filter(|entry| entry.status.is_conflicted())
@@ -67,10 +128,8 @@ impl ConflictsModal {
             .collect()
     }
 
-    // ponytail: checks the rebase dirs on disk; move to the repository snapshot if it is needed elsewhere.
     fn is_rebasing(&self, cx: &App) -> bool {
-        let git_dir = &self.repository.read(cx).repository_dir_abs_path;
-        git_dir.join(git::REBASE_MERGE_DIR).exists() || git_dir.join("rebase-apply").exists()
+        is_rebasing(&self.repository.read(cx).repository_dir_abs_path)
     }
 
     fn side_labels(&self, cx: &App) -> (SharedString, SharedString) {
@@ -103,22 +162,8 @@ impl ConflictsModal {
             (Side::Yours, false) | (Side::Theirs, true) => "--ours",
             (Side::Theirs, false) | (Side::Yours, true) => "--theirs",
         };
-        let path = path.as_unix_str().to_string();
-        let checkout = self.repository.update(cx, |repository, cx| {
-            repository.run_git_command(
-                vec!["checkout".into(), flag.into(), "--".into(), path.clone()],
-                cx,
-            )
-        });
-        let repository = self.repository.clone();
-        let task: Task<anyhow::Result<String>> = cx.spawn(async move |_, cx| {
-            checkout.await??;
-            repository
-                .update(cx, |repository, cx| {
-                    repository.run_git_command(vec!["add".into(), "--".into(), path], cx)
-                })
-                .await?
-        });
+        let ours = flag == "--ours";
+        let task = accept_side(&self.repository, path, ours, cx);
         task.detach_and_prompt_err("Resolving the conflict failed", window, cx, |_, _, _| None);
     }
 

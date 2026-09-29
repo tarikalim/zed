@@ -1174,6 +1174,7 @@ pub struct GitPanel {
     pending_commit: Option<Task<()>>,
     push_after_commit: bool,
     changelists: changelists::Changelists,
+    rebasing: bool,
     shelf: Vec<shelf::ShelvedChangelist>,
     expanded_shelves: HashSet<std::path::PathBuf>,
     /// (staged, total) per changelist, rebuilt with the entries.
@@ -1493,6 +1494,7 @@ impl GitPanel {
                 pending_commit: None,
                 push_after_commit: false,
                 changelists: Default::default(),
+                rebasing: false,
                 shelf: Vec::new(),
                 expanded_shelves: HashSet::default(),
                 changelist_counts: Vec::new(),
@@ -5700,6 +5702,8 @@ impl GitPanel {
         let repo = repo.read(cx);
 
         self.stash_entries = repo.cached_stash();
+        // ponytail: two stats per status update; move into the repository snapshot if it shows up in profiles.
+        self.rebasing = crate::conflicts_dialog::is_rebasing(&repo.repository_dir_abs_path);
         if group_by_changelist {
             let git_dir = &repo.repository_dir_abs_path;
             if self.changelists.location().and_then(|path| path.parent()) != Some(git_dir.as_ref()) {
@@ -5765,7 +5769,8 @@ impl GitPanel {
                     self.changelist_counts.get_mut(index),
                 ) {
                     counts.1 += 1;
-                    if staging.has_staged() && !staging.has_unstaged() {
+                    // Same rule as the other sections' counts, which include pending stage operations.
+                    if GitPanel::stage_status_for_entry(&entry, repo).has_staged() {
                         counts.0 += 1;
                     }
                     entries.push(entry);
@@ -7197,11 +7202,7 @@ impl GitPanel {
     }
 
     fn render_rebase_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let repository = self.active_repository.as_ref()?.read(cx);
-        // ponytail: two stats per render; move into the repository snapshot if it shows up in profiles.
-        let git_dir = &repository.repository_dir_abs_path;
-        let rebasing = git_dir.join(git::REBASE_MERGE_DIR).exists() || git_dir.join("rebase-apply").exists();
-        if !rebasing {
+        if !self.rebasing {
             return None;
         }
         Some(

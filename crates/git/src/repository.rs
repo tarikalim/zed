@@ -802,12 +802,17 @@ impl LogSource {
             };
             // The revision list ends with `--`; options must go before it.
             args.pop();
-            args.extend(
-                filter
-                    .authors
-                    .iter()
-                    .map(|author| Cow::Owned(format!("--author={author}"))),
-            );
+            // `--author` is a regex over "Name <email>"; match the exact name, like JetBrains' User filter.
+            args.extend(filter.authors.iter().map(|author| {
+                let escaped: String = author
+                    .chars()
+                    .flat_map(|character| {
+                        let special = matches!(character, '\\' | '.' | '[' | ']' | '*' | '^' | '$');
+                        special.then_some('\\').into_iter().chain(Some(character))
+                    })
+                    .collect();
+                Cow::Owned(format!("--author=^{escaped} <"))
+            }));
             if let Some(since) = &filter.since {
                 args.push(Cow::Owned(format!("--since={since}")));
             }
@@ -815,7 +820,10 @@ impl LogSource {
                 args.push(Cow::Owned(format!("--until={until}")));
             }
             args.push(Cow::Borrowed("--"));
-            args.extend(filter.paths.iter().map(|path| Cow::Borrowed(path.as_unix_str())));
+            // The repository root is an empty path, which git rejects as a pathspec.
+            args.extend(filter.paths.iter().map(|path| {
+                Cow::Borrowed(if path.is_empty() { "." } else { path.as_unix_str() })
+            }));
             return args;
         }
         let mut args = match self {
@@ -1755,7 +1763,16 @@ impl GitRepository for RealGitRepository {
             anyhow::ensure!(
                 output.status.success(),
                 "git {} failed:\n{}{}",
-                args.first().map(String::as_str).unwrap_or_default(),
+                // Skip leading `-c key=value` pairs so the message names the subcommand.
+                args.iter()
+                    .scan(false, |skip_next, arg| {
+                        let skip = std::mem::take(skip_next) || arg == "-c";
+                        *skip_next = arg == "-c";
+                        Some((skip, arg))
+                    })
+                    .find(|(skip, _)| !skip)
+                    .map(|(_, arg)| arg.as_str())
+                    .unwrap_or_default(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             );
@@ -5692,13 +5709,16 @@ mod tests {
     fn test_log_filter_args() {
         let filter = LogSource::Filtered(LogFilter {
             branches: vec!["main".into()],
-            authors: vec!["Ada".into()],
+            authors: vec!["A.da".into()],
             since: Some("2026-09-01".into()),
             until: None,
-            paths: vec![RepoPath::new("src").unwrap()],
+            paths: vec![RepoPath::new("src").unwrap(), RepoPath::new("").unwrap()],
         });
         let args: Vec<String> = filter.get_args().iter().map(|a| a.to_string()).collect();
-        assert_eq!(args, ["main", "--author=Ada", "--since=2026-09-01", "--", "src"]);
+        assert_eq!(
+            args,
+            ["main", "--author=^A\\.da <", "--since=2026-09-01", "--", "src", "."]
+        );
         assert!(filter.is_linear());
 
         let all = LogSource::Filtered(LogFilter::default());

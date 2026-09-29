@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Builds this fork (no Xcode needed) and installs it as ~/Applications/Zed JetBrains.app.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+cargo build --release -p zed --features gpui_platform/runtime_shaders
+
+app="$HOME/Applications/Zed JetBrains.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp target/release/zed "$app/Contents/MacOS/zed"
+if [ -f /Applications/Zed.app/Contents/Resources/Zed.icns ]; then
+  cp /Applications/Zed.app/Contents/Resources/Zed.icns "$app/Contents/Resources/Zed.icns"
+fi
+cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Zed JetBrains</string>
+  <key>CFBundleDisplayName</key><string>Zed JetBrains</string>
+  <key>CFBundleIdentifier</key><string>dev.zed.Zed-JetBrains</string>
+  <key>CFBundleExecutable</key><string>zed</string>
+  <key>CFBundleIconFile</key><string>Zed</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>10.15.7</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$app/Contents/MacOS/zed" "$HOME/.local/bin/zed-jb"
+echo "Installed: $app"
+echo "CLI: zed-jb <path>  (~/.local/bin must be on PATH)"

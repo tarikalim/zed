@@ -52,6 +52,8 @@ pub(crate) fn load(git_dir: &Path) -> Vec<ShelvedChangelist> {
     shelved
 }
 
+static SHELF_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Saves the changes of `paths` (staged and unstaged, relative to HEAD) to the shelf and reverts them.
 pub(crate) fn shelve(
     repository: &Entity<Repository>,
@@ -61,18 +63,57 @@ pub(crate) fn shelve(
 ) -> Task<anyhow::Result<()>> {
     let git_dir = repository.read(cx).repository_dir_abs_path.to_path_buf();
     let files: Vec<String> = paths.iter().map(|path| path.as_unix_str().to_string()).collect();
-    let diff = repository.update(cx, |repository, _| {
-        let mut args = vec!["diff".into(), "--binary".into(), "HEAD".into(), "--".into()];
-        args.extend(files.iter().cloned());
-        repository.git_output(args)
-    });
     let repository = repository.clone();
     cx.spawn(async move |cx| {
-        let patch = diff.await??;
+        let git = |args: Vec<String>, cx: &mut gpui::AsyncApp| {
+            repository.update(cx, |repository, _| repository.git_output(args))
+        };
+        let with_paths = |mut args: Vec<String>| {
+            args.push("--".into());
+            args.extend(files.iter().cloned());
+            args
+        };
+        // Untracked files never show up in `git diff`; mark them intent-to-add so they are shelved too.
+        let untracked = git(
+            with_paths(vec!["ls-files".into(), "--others".into(), "--exclude-standard".into(), "-z".into()]),
+            cx,
+        )
+        .await??;
+        let untracked: Vec<String> = untracked
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !untracked.is_empty() {
+            let mut args = vec!["add".into(), "--intent-to-add".into(), "--".into()];
+            args.extend(untracked);
+            git(args, cx).await??;
+        }
+        // Pin the patch format so user diff settings (noprefix, external diff, color) cannot break unshelve.
+        let patch = git(
+            with_paths(vec![
+                "diff".into(),
+                "--binary".into(),
+                "--no-ext-diff".into(),
+                "--no-textconv".into(),
+                "--no-color".into(),
+                "--src-prefix=a/".into(),
+                "--dst-prefix=b/".into(),
+                "HEAD".into(),
+            ]),
+            cx,
+        )
+        .await??;
         anyhow::ensure!(!patch.trim().is_empty(), "There are no changes to shelve.");
         let timestamp = time::OffsetDateTime::now_utc().unix_timestamp();
-        let directory = shelf_dir(&git_dir).join(format!("{timestamp}-{}", std::process::id()));
-        std::fs::create_dir_all(&directory)?;
+        let directory = shelf_dir(&git_dir).join(format!(
+            "{timestamp}-{}-{}",
+            std::process::id(),
+            SHELF_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(shelf_dir(&git_dir))?;
+        // `create_dir` fails on an existing directory, so one shelf can never overwrite another.
+        std::fs::create_dir(&directory)?;
         std::fs::write(directory.join(PATCH_FILE), patch)?;
         let meta = ShelvedChangelist {
             name,
