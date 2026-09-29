@@ -8103,7 +8103,18 @@ impl GitPanel {
                         Label::new(header.title())
                             .color(Color::Muted)
                             .size(LabelSize::Small),
-                    ),
+                    )
+                    .when(section == Section::Conflict && !all_conflicts_resolved, |this| {
+                        this.child(
+                            Button::new(("resolve-conflicts", ix), "Resolve")
+                                .label_size(LabelSize::Small)
+                                .color(Color::Accent)
+                                .on_click(|_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.dispatch_action(Box::new(git::ResolveConflicts), cx);
+                                }),
+                        )
+                    }),
             )
             .child(if section_is_empty {
                 gpui::Empty.into_any_element()

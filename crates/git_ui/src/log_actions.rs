@@ -162,8 +162,28 @@ pub(crate) fn spawn_git_job<T: 'static>(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let task: Task<anyhow::Result<T>> = window.spawn(cx, async move |_| receiver.await?);
-    task.detach_and_prompt_err(error_title, window, cx, |_, _, _| None);
+    let error_title = error_title.to_string();
+    window
+        .spawn(cx, async move |cx| {
+            let Err(error) = receiver.await.map_err(anyhow::Error::from).and_then(|r| r) else {
+                return;
+            };
+            // Like JetBrains, a merge, rebase or cherry-pick that stops on conflicts opens the Conflicts dialog.
+            let message = format!("{error:#}");
+            cx.update(|window, cx| {
+                if ["CONFLICT", "could not apply", "could not revert"]
+                    .iter()
+                    .any(|marker| message.contains(marker))
+                {
+                    window.dispatch_action(Box::new(git::ResolveConflicts), cx);
+                } else {
+                    let task: Task<anyhow::Result<()>> = Task::ready(Err(error));
+                    task.detach_and_prompt_err(&error_title, window, cx, |_, _, _| None);
+                }
+            })
+            .ok();
+        })
+        .detach();
 }
 
 fn run_commit_operation(

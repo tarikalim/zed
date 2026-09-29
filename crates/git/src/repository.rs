@@ -1754,8 +1754,9 @@ impl GitRepository for RealGitRepository {
             let output = git?.build_command(&args).envs(env.iter()).output().await?;
             anyhow::ensure!(
                 output.status.success(),
-                "git {} failed:\n{}",
+                "git {} failed:\n{}{}",
                 args.first().map(String::as_str).unwrap_or_default(),
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             );
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())

@@ -87,6 +87,8 @@ actions!(
         StashTracked,
         /// Stashes staged changes in the repository, leaving unstaged changes in place.
         StashStaged,
+        /// Opens the "Conflicts" dialog listing files with merge conflicts.
+        ResolveConflicts,
         /// Opens the "Stash Changes" dialog.
         StashChanges,
         /// Opens the "Unstash Changes" dialog.
