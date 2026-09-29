@@ -129,7 +129,7 @@
       "cmd-k": "git::OpenCommitWindow",
       "alt-cmd-k": "git::CommitAndPush",
       "cmd-t": "git::Pull", // JetBrains: Update Project
-      "cmd-9": "git_graph::Open",
+      "cmd-9": "git_tool_window::ToggleFocus",
       "cmd-shift-o": "file_finder::Toggle",
       "cmd-shift-n": "file_finder::Toggle",
       "cmd-n": "project_symbols::Toggle",
@@ -154,7 +154,7 @@
       "cmd-6": "diagnostics::Deploy",
       "cmd-7": "outline_panel::ToggleFocus",
       "cmd-8": null, // Services (bottom dock)
-      "cmd-9": "git_graph::Open", // JetBrains: Git tool window (Log)
+      "cmd-9": "git_tool_window::ToggleFocus", // JetBrains: Git tool window (Log)
       "cmd-0": "git_panel::ToggleFocus",
     },
   },
@@ -198,6 +198,7 @@
     },
   },
   { "context": "GitPanel", "bindings": { "cmd-0": "workspace::CloseActiveDock" } },
+  { "context": "GitToolWindow", "bindings": { "cmd-9": "workspace::CloseActiveDock" } },
   { "context": "CommitEditor > Editor", "bindings": { "ctrl-m": "git::ShowCommitMessageHistory" } },
   { "context": "GitGraph", "bindings": { "cmd-d": "git_graph::OpenCommitView" } },
   { "context": "ProjectPanel", "bindings": { "cmd-1": "workspace::CloseActiveDock" } },

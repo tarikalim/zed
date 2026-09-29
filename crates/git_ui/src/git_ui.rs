@@ -43,6 +43,7 @@ mod conflict_view;
 mod diff_multibuffer;
 pub mod git_graph;
 pub mod git_panel;
+pub mod git_tool_window;
 mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
@@ -69,6 +70,7 @@ pub use blame_ui::GitBlameStatus;
 pub use conflict_view::MergeConflictIndicator;
 
 pub fn init(cx: &mut App) {
+    git_tool_window::init(cx);
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);
     commit_view::init(cx);
     git_graph::init(cx);
