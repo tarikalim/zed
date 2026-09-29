@@ -1,6 +1,8 @@
 pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitView};
 #[path = "log_filters.rs"]
 mod log_filters;
+#[path = "log_branches.rs"]
+mod log_branches;
 
 use crate::{
     commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
@@ -1337,6 +1339,7 @@ pub struct GitGraph {
     pending_select_sha: Option<Oid>,
     nav_history: Option<ItemNavHistory>,
     log_filter_state: log_filters::LogFilterState,
+    branches_pane: log_branches::BranchesPaneState,
 }
 
 impl GitGraph {
@@ -1593,6 +1596,7 @@ impl GitGraph {
             pending_select_sha: None,
             nav_history: None,
             log_filter_state: Default::default(),
+            branches_pane: Default::default(),
         };
 
         this.fetch_initial_graph_data(cx);
@@ -2577,6 +2581,22 @@ impl GitGraph {
             .gap_1p5()
             .border_b_1()
             .border_color(color.border_variant)
+            .when(self.shows_log_filters(), |this| {
+                this.child(
+                    IconButton::new("git-log-toggle-branches", IconName::GitBranch)
+                        .shape(ui::IconButtonShape::Square)
+                        .toggle_state(self.branches_pane.open)
+                        .tooltip(Tooltip::text(if self.branches_pane.open {
+                            "Hide Branches"
+                        } else {
+                            "Show Branches"
+                        }))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.branches_pane.open = !this.branches_pane.open;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 h_flex()
                     .h_8()
@@ -4098,10 +4118,19 @@ impl Render for GitGraph {
                 cx.notify();
             }))
             .child(
-                v_flex()
+                h_flex()
                     .size_full()
-                    .child(self.render_search_bar(cx))
-                    .child(div().flex_1().child(content)),
+                    .when(self.shows_log_filters() && self.branches_pane.open, |this| {
+                        this.child(self.render_branches_pane(cx))
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .size_full()
+                            .child(self.render_search_bar(cx))
+                            .child(div().flex_1().child(content)),
+                    ),
             )
             .children(self.context_menu.as_ref().map(|context_menu| {
                 deferred(

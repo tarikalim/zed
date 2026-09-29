@@ -13,7 +13,7 @@ pub(super) struct LogFilterState {
 }
 
 impl GitGraph {
-    fn log_filter(&self) -> LogFilter {
+    pub(super) fn log_filter(&self) -> LogFilter {
         match &self.log_source {
             LogSource::Filtered(filter) => filter.clone(),
             _ => LogFilter::default(),

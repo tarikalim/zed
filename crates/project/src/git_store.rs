@@ -7190,6 +7190,29 @@ impl Repository {
         })
     }
 
+    /// Like [`Self::git_output`], for commands that change the repository; rescans afterwards.
+    pub fn run_git_command(
+        &mut self,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> oneshot::Receiver<Result<String>> {
+        let receiver = self.git_output(args);
+        let scan_updates_tx =
+            self.git_store()
+                .and_then(|git_store| match &git_store.read(cx).state {
+                    GitStoreState::Local { downstream, .. } => Some(
+                        downstream
+                            .as_ref()
+                            .map(|downstream| downstream.updates_tx.clone()),
+                    ),
+                    _ => None,
+                });
+        if let Some(updates_tx) = scan_updates_tx {
+            self.schedule_scan(updates_tx, cx);
+        }
+        receiver
+    }
+
     // ponytail: local repositories only; add a proto message when remote projects need it.
     pub fn run_commit_operation(
         &mut self,

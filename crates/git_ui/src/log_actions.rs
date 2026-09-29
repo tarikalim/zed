@@ -144,13 +144,25 @@ fn open_modal<V: ModalView>(
         .ok();
 }
 
-fn spawn_git_job(
-    receiver: futures::channel::oneshot::Receiver<anyhow::Result<()>>,
+pub(crate) fn open_new_branch_modal(
+    workspace: &WeakEntity<Workspace>,
+    repository: WeakEntity<Repository>,
+    sha: Oid,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_modal(workspace, window, cx, move |window, cx| {
+        NewRefModal::new(NewRefKind::Branch, repository, sha, window, cx)
+    })
+}
+
+pub(crate) fn spawn_git_job<T: 'static>(
+    receiver: futures::channel::oneshot::Receiver<anyhow::Result<T>>,
     error_title: &str,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let task: Task<anyhow::Result<()>> = window.spawn(cx, async move |_| receiver.await?);
+    let task: Task<anyhow::Result<T>> = window.spawn(cx, async move |_| receiver.await?);
     task.detach_and_prompt_err(error_title, window, cx, |_, _, _| None);
 }
 
