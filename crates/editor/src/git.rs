@@ -2169,7 +2169,7 @@ impl Editor {
         }
     }
 
-    fn restore_hunks_in_ranges(
+    pub(crate) fn restore_hunks_in_ranges(
         &mut self,
         ranges: Vec<Range<Point>>,
         window: &mut Window,

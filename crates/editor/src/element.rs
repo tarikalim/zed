@@ -4870,6 +4870,70 @@ impl EditorElement {
         (controls, control_bounds)
     }
 
+    /// JetBrains-style `>>` buttons at the left edge of the right-hand split pane, one per
+    /// visible hunk, that revert the hunk to the base text.
+    fn layout_split_revert_buttons(
+        &self,
+        row_range: Range<DisplayRow>,
+        gutter_hitbox: &Hitbox,
+        line_height: Pixels,
+        scroll_pixel_position: gpui::Point<ScrollPixelOffset>,
+        sticky_header_height: Pixels,
+        display_hunks: &[(DisplayDiffHunk, Option<Hitbox>)],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        let sticky_top = gutter_hitbox.bounds.top() + sticky_header_height;
+        let mut buttons = Vec::new();
+        for (hunk, _) in display_hunks {
+            let DisplayDiffHunk::Unfolded {
+                display_row_range,
+                multi_buffer_range,
+                is_created_file,
+                ..
+            } = hunk
+            else {
+                continue;
+            };
+            if *is_created_file
+                || display_row_range.start >= row_range.end
+                || display_row_range.end <= row_range.start
+            {
+                continue;
+            }
+            let y: Pixels = (display_row_range.start.as_f64()
+                * ScrollPixelOffset::from(line_height)
+                + ScrollPixelOffset::from(gutter_hitbox.bounds.top())
+                - scroll_pixel_position.y)
+                .into();
+            if y < sticky_top {
+                continue;
+            }
+            let hunk_start = multi_buffer_range.start;
+            let editor = self.editor.clone();
+            let mut element = IconButton::new(
+                ("split-revert-hunk", display_row_range.start.0 as u64),
+                IconName::ChevronRight,
+            )
+            .icon_size(IconSize::XSmall)
+            .icon_color(Color::Accent)
+            .tooltip(Tooltip::text("Revert"))
+            .on_click(move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    let snapshot = editor.snapshot(window, cx);
+                    let point = hunk_start.to_point(&snapshot.buffer_snapshot());
+                    editor.restore_hunks_in_ranges(vec![point..point], window, cx);
+                });
+            })
+            .into_any_element();
+            let size = element.layout_as_root(size(line_height, line_height).into(), window, cx);
+            let origin = gpui::Point::new(gutter_hitbox.bounds.left(), y + (line_height - size.height) / 2.);
+            window.with_absolute_element_offset(origin, |window| element.prepaint(window, cx));
+            buttons.push(element);
+        }
+        buttons
+    }
+
     fn layout_signature_help(
         &self,
         hitbox: &Hitbox,
@@ -9905,7 +9969,7 @@ impl Element for EditorElement {
                         sticky_scroll_header_height
                     };
 
-                    let (diff_hunk_controls, diff_hunk_control_bounds) =
+                    let (mut diff_hunk_controls, diff_hunk_control_bounds) =
                         if is_read_only && self.editor.read(cx).diff_hunk_renderer.is_none() {
                             (vec![], vec![])
                         } else {
@@ -9925,6 +9989,19 @@ impl Element for EditorElement {
                                 cx,
                             )
                         };
+
+                    if self.split_side == Some(SplitSide::Right) && !is_read_only {
+                        diff_hunk_controls.extend(self.layout_split_revert_buttons(
+                            start_row..end_row,
+                            &gutter_hitbox,
+                            line_height,
+                            scroll_pixel_position,
+                            sticky_header_height,
+                            &display_hunks,
+                            window,
+                            cx,
+                        ));
+                    }
 
                     self.populate_point_diagnostics(
                         &snapshot,

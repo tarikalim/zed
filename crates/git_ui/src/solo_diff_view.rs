@@ -265,6 +265,11 @@ impl SoloDiffView {
         self.repository_id == repository.read(cx).id && &self.repo_path == repo_path
     }
 
+    fn difference_count(&self, cx: &App) -> usize {
+        let editor = self.editor.read(cx).rhs_editor().read(cx);
+        editor.buffer().read(cx).snapshot(cx).diff_hunks().count()
+    }
+
     fn button_states(&self, cx: &App) -> SoloDiffButtonStates {
         let editor = self.editor.read(cx).rhs_editor().read(cx);
         let multibuffer = editor.buffer().read(cx);
@@ -769,6 +774,7 @@ impl Render for SoloDiffGitToolbar {
             .read(cx)
             .status_for_path(&solo_diff.repo_path);
         let diff_stat = status_entry.and_then(|entry| entry.diff_stat);
+        let difference_count = solo_diff.difference_count(cx);
 
         h_flex()
             .my_neg_1()
@@ -780,6 +786,15 @@ impl Render for SoloDiffGitToolbar {
                 DiffStat::new("solo-diff-stat", stat.added as usize, stat.deleted as usize)
             }))
             .child(Divider::vertical().ml_1())
+            .child(
+                Label::new(match difference_count {
+                    0 => "No differences".to_string(),
+                    1 => "1 difference".to_string(),
+                    count => format!("{count} differences"),
+                })
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+            )
             .child(
                 h_group_sm()
                     .child(
