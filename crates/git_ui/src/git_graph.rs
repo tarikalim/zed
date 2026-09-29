@@ -1,4 +1,7 @@
 pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitView};
+#[path = "log_filters.rs"]
+mod log_filters;
+
 use crate::{
     commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
     commit_tooltip::CommitAvatar,
@@ -1198,7 +1201,10 @@ pub fn open_or_reuse_graph(
 ) {
     let existing = workspace.items_of_type::<GitGraph>(cx).find(|graph| {
         let graph = graph.read(cx);
-        graph.repo_id == repo_id && graph.log_source == log_source
+        graph.repo_id == repo_id
+            && (graph.log_source == log_source
+                || (log_source == LogSource::All
+                    && matches!(graph.log_source, LogSource::Filtered(_))))
     });
 
     let git_graph = if let Some(existing) = existing {
@@ -1330,6 +1336,7 @@ pub struct GitGraph {
     changed_files_expanded_dirs: HashMap<RepoPath, bool>,
     pending_select_sha: Option<Oid>,
     nav_history: Option<ItemNavHistory>,
+    log_filter_state: log_filters::LogFilterState,
 }
 
 impl GitGraph {
@@ -1393,7 +1400,7 @@ impl GitGraph {
             }
         };
 
-        let is_path_history = matches!(self.log_source, LogSource::Path(_));
+        let is_path_history = self.log_source.is_linear();
         let graph_fraction = if is_path_history { 0.0 } else { value(0) };
         let offset = if is_path_history { 0 } else { 1 };
 
@@ -1439,48 +1446,11 @@ impl GitGraph {
         }
     }
 
-    pub fn new(
-        repo_id: RepositoryId,
-        git_store: Entity<GitStore>,
-        workspace: WeakEntity<Workspace>,
-        log_source: Option<LogSource>,
-        window: &mut Window,
+    fn column_layout(
+        linear: bool,
         cx: &mut Context<Self>,
-    ) -> Self {
-        let focus_handle = cx.focus_handle();
-        cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
-            .detach();
-
-        let accent_colors = cx.theme().accents();
-        let graph = GraphData::new(accent_colors_count(accent_colors));
-        let log_source = log_source.unwrap_or_default();
-        let log_order = LogOrder::default();
-
-        cx.subscribe(&git_store, |this, _, event, cx| match event {
-            GitStoreEvent::RepositoryUpdated(updated_repo_id, repo_event, _) => {
-                if this.repo_id == *updated_repo_id {
-                    if let Some(repository) = this.get_repository(cx) {
-                        this.on_repository_event(repository, repo_event, cx);
-                    }
-                }
-            }
-            _ => {}
-        })
-        .detach();
-
-        let search_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Search commits…", window, cx);
-            editor
-        });
-
-        let table_interaction_state = cx.new(|cx| {
-            let mut state = TableInteractionState::new(cx);
-            state.focus_handle = state.focus_handle.tab_index(1).tab_stop(true);
-            state
-        });
-
-        let column_widths = if matches!(log_source, LogSource::Path(_)) {
+    ) -> (Entity<RedistributableColumnsState>, TableRow<bool>) {
+        let column_widths = if linear {
             cx.new(|_cx| {
                 RedistributableColumnsState::new(
                     4,
@@ -1521,12 +1491,57 @@ impl GitGraph {
         };
         let column_visibility = TableRow::from_element(
             false,
-            if matches!(log_source, LogSource::Path(_)) {
+            if linear {
                 TABLE_COLUMN_COUNT
             } else {
                 TABLE_COLUMN_COUNT + 1
             },
         );
+        (column_widths, column_visibility)
+    }
+
+    pub fn new(
+        repo_id: RepositoryId,
+        git_store: Entity<GitStore>,
+        workspace: WeakEntity<Workspace>,
+        log_source: Option<LogSource>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus_handle = cx.focus_handle();
+        cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
+            .detach();
+
+        let accent_colors = cx.theme().accents();
+        let graph = GraphData::new(accent_colors_count(accent_colors));
+        let log_source = log_source.unwrap_or_default();
+        let log_order = LogOrder::default();
+
+        cx.subscribe(&git_store, |this, _, event, cx| match event {
+            GitStoreEvent::RepositoryUpdated(updated_repo_id, repo_event, _) => {
+                if this.repo_id == *updated_repo_id {
+                    if let Some(repository) = this.get_repository(cx) {
+                        this.on_repository_event(repository, repo_event, cx);
+                    }
+                }
+            }
+            _ => {}
+        })
+        .detach();
+
+        let search_editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Text or hash", window, cx);
+            editor
+        });
+
+        let table_interaction_state = cx.new(|cx| {
+            let mut state = TableInteractionState::new(cx);
+            state.focus_handle = state.focus_handle.tab_index(1).tab_stop(true);
+            state
+        });
+
+        let (column_widths, column_visibility) = Self::column_layout(log_source.is_linear(), cx);
         let mut row_height = Self::row_height(window, cx);
 
         cx.observe_global_in::<settings::SettingsStore>(window, move |this, window, cx| {
@@ -1577,9 +1592,13 @@ impl GitGraph {
             changed_files_expanded_dirs: HashMap::default(),
             pending_select_sha: None,
             nav_history: None,
+            log_filter_state: Default::default(),
         };
 
         this.fetch_initial_graph_data(cx);
+        if this.shows_log_filters() {
+            this.load_log_filter_users(cx);
+        }
         this
     }
 
@@ -2496,7 +2515,7 @@ impl GitGraph {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_path_history = matches!(self.log_source, LogSource::Path(_));
+        let is_path_history = self.log_source.is_linear();
         let columns: &[&str] = if is_path_history {
             &["Description", "Date", "Author", "Commit"]
         } else {
@@ -2596,6 +2615,9 @@ impl GitGraph {
                             })
                     }),
             )
+            .when(self.shows_log_filters(), |this| {
+                this.child(self.render_log_filters(cx))
+            })
             .child(
                 h_flex()
                     .min_w_64()
@@ -3739,7 +3761,7 @@ impl Render for GitGraph {
                     this.child(self.render_loading_spinner(cx))
                 })
         } else {
-            let is_path_history = matches!(self.log_source, LogSource::Path(_));
+            let is_path_history = self.log_source.is_linear();
             let header_resize_info =
                 HeaderResizeInfo::from_redistributable(&self.column_widths, cx);
 
@@ -4432,7 +4454,8 @@ mod persistence {
 
     pub fn serialize_log_source_type(log_source: &LogSource) -> i32 {
         match log_source {
-            LogSource::All => LOG_SOURCE_ALL,
+            // ponytail: Log filters are not persisted; a restored Log opens unfiltered.
+            LogSource::All | LogSource::Filtered(_) => LOG_SOURCE_ALL,
             LogSource::Branch(_) => LOG_SOURCE_BRANCH,
             LogSource::Sha(_) => LOG_SOURCE_SHA,
             LogSource::Path(_) => LOG_SOURCE_PATH,
@@ -4441,7 +4464,7 @@ mod persistence {
 
     pub fn serialize_log_source_value(log_source: &LogSource) -> Option<String> {
         match log_source {
-            LogSource::All => None,
+            LogSource::All | LogSource::Filtered(_) => None,
             LogSource::Branch(branch) => Some(branch.to_string()),
             LogSource::Sha(oid) => Some(oid.to_string()),
             LogSource::Path(path) => Some(path.as_unix_str().to_string()),

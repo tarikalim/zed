@@ -469,6 +469,14 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
+    fn git_output(
+        &self,
+        _args: Vec<String>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<String>> {
+        async { Ok(String::new()) }.boxed()
+    }
+
     fn run_commit_operation(
         &self,
         _commit: String,

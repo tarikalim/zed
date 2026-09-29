@@ -797,7 +797,16 @@ message GitLogSource {
     string branch = 2;
     string sha = 3;
     string path = 4;
+    GitLogFilter filtered = 5;
   }
+}
+
+message GitLogFilter {
+  repeated string branches = 1;
+  repeated string authors = 2;
+  optional string since = 3;
+  optional string until = 4;
+  repeated string paths = 5;
 }
 
 message GetInitialGraphData {

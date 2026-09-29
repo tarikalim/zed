@@ -748,10 +748,76 @@ pub enum LogSource {
     Branch(SharedString),
     Sha(Oid),
     Path(RepoPath),
+    Filtered(LogFilter),
+}
+
+/// The JetBrains Log filters: Branch, User, Date and Paths.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LogFilter {
+    /// Empty means every branch, remote and tag, like [`LogSource::All`].
+    pub branches: Vec<SharedString>,
+    pub authors: Vec<SharedString>,
+    /// Any date git accepts, e.g. `2026-09-01` or `7 days ago`.
+    pub since: Option<SharedString>,
+    pub until: Option<SharedString>,
+    pub paths: Vec<RepoPath>,
+}
+
+impl LogFilter {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Author, date and path filters drop commits without rewriting parents, so the result
+    /// cannot be drawn as a graph.
+    pub fn is_linear(&self) -> bool {
+        !self.authors.is_empty()
+            || self.since.is_some()
+            || self.until.is_some()
+            || !self.paths.is_empty()
+    }
 }
 
 impl LogSource {
+    pub fn is_linear(&self) -> bool {
+        match self {
+            LogSource::Path(_) => true,
+            LogSource::Filtered(filter) => filter.is_linear(),
+            LogSource::All | LogSource::Branch(_) | LogSource::Sha(_) => false,
+        }
+    }
+
     fn get_args(&self) -> Vec<Cow<'_, str>> {
+        if let LogSource::Filtered(filter) = self {
+            let mut args = if filter.branches.is_empty() {
+                LogSource::All.get_args()
+            } else {
+                let mut args: Vec<Cow<'_, str>> = filter
+                    .branches
+                    .iter()
+                    .map(|branch| Cow::Borrowed(branch.as_str()))
+                    .collect();
+                args.push(Cow::Borrowed("--"));
+                args
+            };
+            // The revision list ends with `--`; options must go before it.
+            args.pop();
+            args.extend(
+                filter
+                    .authors
+                    .iter()
+                    .map(|author| Cow::Owned(format!("--author={author}"))),
+            );
+            if let Some(since) = &filter.since {
+                args.push(Cow::Owned(format!("--since={since}")));
+            }
+            if let Some(until) = &filter.until {
+                args.push(Cow::Owned(format!("--until={until}")));
+            }
+            args.push(Cow::Borrowed("--"));
+            args.extend(filter.paths.iter().map(|path| Cow::Borrowed(path.as_unix_str())));
+            return args;
+        }
         let mut args = match self {
             LogSource::All => vec![
                 Cow::Borrowed("--ignore-missing"), // needed in case of unborn HEAD
@@ -767,6 +833,7 @@ impl LogSource {
                 Cow::Borrowed("--"),
                 Cow::Borrowed(path.as_unix_str()),
             ],
+            LogSource::Filtered(_) => unreachable!("handled above"),
         };
         // Without a terminator git cannot tell a branch named `docs/rewrite` from a
         // `docs/rewrite` directory in the working tree, and refuses the argument as
@@ -936,6 +1003,13 @@ pub trait GitRepository: Send + Sync {
         operation: CommitOperation,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
+
+    /// Runs git in the working directory and returns stdout.
+    fn git_output(
+        &self,
+        args: Vec<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<String>>;
 
     fn show(&self, commit: String) -> BoxFuture<'_, Result<CommitDetails>>;
 
@@ -1666,6 +1740,25 @@ impl GitRepository for RealGitRepository {
                 String::from_utf8_lossy(&output.stderr),
             );
             Ok(())
+        }
+        .boxed()
+    }
+
+    fn git_output(
+        &self,
+        args: Vec<String>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<String>> {
+        let git = self.git_binary_in_worktree();
+        async move {
+            let output = git?.build_command(&args).envs(env.iter()).output().await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "git {} failed:\n{}",
+                args.first().map(String::as_str).unwrap_or_default(),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         }
         .boxed()
     }
@@ -5425,6 +5518,44 @@ mod tests {
         assert_eq!(graph_data[0].sha, commit_sha);
     }
 
+    #[gpui::test]
+    async fn test_initial_graph_data_applies_log_filter(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        git_init_repo(path);
+        let commit_as = |author: &str, file: &str| {
+            fs::write(path.join(file), author).unwrap();
+            git_command(path, ["add", file]);
+            git_command(
+                path,
+                ["commit", "-m", file, &format!("--author={author} <{author}@example.com>")],
+            );
+            git_command_output(path, ["rev-parse", "HEAD"]).parse::<Oid>().unwrap()
+        };
+        let ada_docs = commit_as("Ada", "docs.md");
+        commit_as("Bob", "docs.md");
+        commit_as("Ada", "main.rs");
+
+        let repo =
+            RealGitRepository::new(&path.join(".git"), None, Some("git".into()), cx.executor())
+                .unwrap();
+        let (request_tx, request_rx) = async_channel::unbounded();
+        let filter = LogFilter {
+            authors: vec!["Ada".into()],
+            paths: vec![RepoPath::new("docs.md").unwrap()],
+            ..LogFilter::default()
+        };
+        repo.initial_graph_data(LogSource::Filtered(filter), LogOrder::DateOrder, request_tx)
+            .await
+            .unwrap();
+
+        let shas: Vec<Oid> = request_rx.recv().await.unwrap().iter().map(|c| c.sha).collect();
+        assert_eq!(shas, [ada_docs]);
+    }
+
     /// A branch whose name also names a path in the working tree - `docs/rewrite` in a
     /// repository that also has a `docs/rewrite` directory - made git reject the revision
     /// as ambiguous, so the git panel's History tab reported "Failed to load commit
@@ -5554,6 +5685,24 @@ mod tests {
 
         let details = repo.show("docs/rewrite".to_string()).await.unwrap();
         assert_eq!(details.sha.as_ref(), commit_sha.to_string());
+    }
+
+    #[test]
+    fn test_log_filter_args() {
+        let filter = LogSource::Filtered(LogFilter {
+            branches: vec!["main".into()],
+            authors: vec!["Ada".into()],
+            since: Some("2026-09-01".into()),
+            until: None,
+            paths: vec![RepoPath::new("src").unwrap()],
+        });
+        let args: Vec<String> = filter.get_args().iter().map(|a| a.to_string()).collect();
+        assert_eq!(args, ["main", "--author=Ada", "--since=2026-09-01", "--", "src"]);
+        assert!(filter.is_linear());
+
+        let all = LogSource::Filtered(LogFilter::default());
+        assert_eq!(all.get_args(), LogSource::All.get_args());
+        assert!(!all.is_linear());
     }
 
     #[test]

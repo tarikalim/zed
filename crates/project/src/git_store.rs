@@ -40,7 +40,7 @@ use git::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitFileStatus, CommitOptions,
         CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        CommitOperation, LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
+        CommitOperation, LogFilter, LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
         SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
         is_binary_content,
     },
@@ -7175,6 +7175,22 @@ impl Repository {
     }
 
     // ponytail: local repositories only; add a proto message when remote projects need it.
+    pub fn git_output(&mut self, args: Vec<String>) -> oneshot::Receiver<Result<String>> {
+        self.send_job("git", None, move |git_repo, _| async move {
+            match git_repo {
+                RepositoryState::Local(LocalRepositoryState {
+                    backend,
+                    environment,
+                    ..
+                }) => backend.git_output(args, environment).await,
+                RepositoryState::Remote(_) => {
+                    anyhow::bail!("This operation is not supported in remote projects yet")
+                }
+            }
+        })
+    }
+
+    // ponytail: local repositories only; add a proto message when remote projects need it.
     pub fn run_commit_operation(
         &mut self,
         commit: String,
@@ -11176,6 +11192,19 @@ fn log_source_to_proto(log_source: &LogSource) -> proto::GitLogSource {
             LogSource::Path(path) => {
                 proto::git_log_source::Source::Path(path.as_unix_str().to_owned())
             }
+            LogSource::Filtered(filter) => {
+                proto::git_log_source::Source::Filtered(proto::GitLogFilter {
+                    branches: filter.branches.iter().map(|b| b.to_string()).collect(),
+                    authors: filter.authors.iter().map(|a| a.to_string()).collect(),
+                    since: filter.since.as_ref().map(|s| s.to_string()),
+                    until: filter.until.as_ref().map(|u| u.to_string()),
+                    paths: filter
+                        .paths
+                        .iter()
+                        .map(|p| p.as_unix_str().to_owned())
+                        .collect(),
+                })
+            }
         }),
     }
 }
@@ -11191,6 +11220,17 @@ fn log_source_from_proto(log_source: proto::GitLogSource) -> Result<LogSource> {
         proto::git_log_source::Source::Path(path) => {
             Ok(LogSource::Path(RepoPath::from_proto(&path)?))
         }
+        proto::git_log_source::Source::Filtered(filter) => Ok(LogSource::Filtered(LogFilter {
+            branches: filter.branches.into_iter().map(Into::into).collect(),
+            authors: filter.authors.into_iter().map(Into::into).collect(),
+            since: filter.since.map(Into::into),
+            until: filter.until.map(Into::into),
+            paths: filter
+                .paths
+                .iter()
+                .map(|path| RepoPath::from_proto(path))
+                .collect::<Result<_>>()?,
+        })),
     }
 }
 
