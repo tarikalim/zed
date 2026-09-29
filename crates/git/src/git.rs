@@ -87,6 +87,10 @@ actions!(
         StashTracked,
         /// Stashes staged changes in the repository, leaving unstaged changes in place.
         StashStaged,
+        /// Continues a stopped rebase.
+        ContinueRebase,
+        /// Aborts the rebase in progress.
+        AbortRebase,
         /// Opens the "Conflicts" dialog listing files with merge conflicts.
         ResolveConflicts,
         /// Opens the "Stash Changes" dialog.

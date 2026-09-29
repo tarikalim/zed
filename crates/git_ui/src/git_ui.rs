@@ -47,6 +47,7 @@ mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
 mod conflicts_dialog;
+mod interactive_rebase;
 mod log_actions;
 mod merge_tool;
 mod stash_dialogs;
@@ -212,6 +213,12 @@ pub fn init(cx: &mut App) {
             });
             stash_dialogs::register(workspace);
             conflicts_dialog::register(workspace);
+            workspace.register_action(|workspace, _: &git::ContinueRebase, window, cx| {
+                run_rebase_command(workspace, &["-c", "core.editor=true", "rebase", "--continue"], window, cx)
+            });
+            workspace.register_action(|workspace, _: &git::AbortRebase, window, cx| {
+                run_rebase_command(workspace, &["rebase", "--abort"], window, cx)
+            });
             workspace.register_action(|workspace, _: &git::CommitAndPush, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                     return;
@@ -390,6 +397,20 @@ pub fn init(cx: &mut App) {
         );
     })
     .detach();
+}
+
+fn run_rebase_command(
+    workspace: &mut Workspace,
+    args: &[&str],
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(repository) = workspace.project().read(cx).active_repository(cx) else {
+        return;
+    };
+    let args = args.iter().map(|arg| arg.to_string()).collect();
+    let receiver = repository.update(cx, |repository, cx| repository.run_git_command(args, cx));
+    log_actions::spawn_git_job(receiver, "Rebase failed", window, cx);
 }
 
 fn open_file_diff(

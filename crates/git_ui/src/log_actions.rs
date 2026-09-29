@@ -1,4 +1,4 @@
-use crate::branch_diff::BranchDiff;
+use crate::{branch_diff::BranchDiff, interactive_rebase};
 use editor::Editor;
 use git::{
     Oid,
@@ -86,6 +86,56 @@ pub(crate) fn jetbrains_log_entries(
             }
         })
     })
+    .entry_disabled_when(!is_local, "Edit Commit Message…", {
+        let workspace = workspace.clone();
+        let repository = repository.clone();
+        move |window, cx| edit_commit_message(&workspace, &repository, sha, is_head, window, cx)
+    })
+    .entry_disabled_when(!is_local, "Fixup…", {
+        let repository = repository.clone();
+        move |window, cx| fixup_commit(&repository, sha, false, window, cx)
+    })
+    .entry_disabled_when(!is_local, "Squash Into…", {
+        let repository = repository.clone();
+        move |window, cx| fixup_commit(&repository, sha, true, window, cx)
+    })
+    .entry_disabled_when(!is_local, "Drop Commits", {
+        let repository = repository.clone();
+        move |window, cx| {
+            let repository = repository.clone();
+            interactive_rebase::confirm_then(
+                format!("Drop commit {sha_short}? The branch history will be rewritten."),
+                "Drop",
+                window,
+                cx,
+                move |window, cx| {
+                    if let Some(repository) = repository.upgrade() {
+                        interactive_rebase::rebase_single_commit(
+                            repository,
+                            sha,
+                            interactive_rebase::RebaseAction::Drop,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            )
+        }
+    })
+    .entry_disabled_when(!is_local, "Interactively Rebase from Here…", {
+        let workspace = workspace.clone();
+        let repository = repository.clone();
+        move |window, cx| {
+            if let Some(repository) = repository.upgrade() {
+                interactive_rebase::open_rebase_dialog(workspace.clone(), repository, sha, window, cx);
+            }
+        }
+    })
+    .entry_disabled_when(!is_local, "Push All up to Here…", {
+        let repository = repository.clone();
+        move |window, cx| push_up_to(&repository, sha, window, cx)
+    })
     .separator()
     .entry_disabled_when(!is_local, "New Branch…", {
         let workspace = workspace.clone();
@@ -131,6 +181,101 @@ impl ContextMenuExt for ContextMenu {
                 .handler(handler),
         )
     }
+}
+
+fn edit_commit_message(
+    workspace: &WeakEntity<Workspace>,
+    repository: &WeakEntity<Repository>,
+    sha: Oid,
+    is_head: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.upgrade() else {
+        return;
+    };
+    let message = repository.update(cx, |repository, _| {
+        repository.git_output(vec![
+            "log".into(),
+            "-1".into(),
+            "--format=%B".into(),
+            sha.to_string(),
+        ])
+    });
+    let workspace = workspace.clone();
+    let task: Task<anyhow::Result<()>> = window.spawn(cx, async move |cx| {
+        let message = message.await??.trim_end().to_string();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                interactive_rebase::RewordModal::new(repository, sha, is_head, message, window, cx)
+            })
+        })
+    });
+    task.detach_and_prompt_err("Edit Commit Message", window, cx, |_, _, _| None);
+}
+
+/// JetBrains "Fixup…" / "Squash Into…": commits the staged changes as `fixup!` / `squash!` of `sha`.
+fn fixup_commit(
+    repository: &WeakEntity<Repository>,
+    sha: Oid,
+    squash: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(repository) = repository.upgrade() else {
+        return;
+    };
+    let flag = if squash { "--squash" } else { "--fixup" };
+    let receiver = repository.update(cx, |repository, cx| {
+        repository.run_git_command(
+            vec![
+                "-c".into(),
+                "core.editor=true".into(),
+                "commit".into(),
+                format!("{flag}={sha}"),
+            ],
+            cx,
+        )
+    });
+    spawn_git_job(receiver, "Fixup commit failed", window, cx);
+}
+
+fn push_up_to(repository: &WeakEntity<Repository>, sha: Oid, window: &mut Window, cx: &mut App) {
+    let Some(repository) = repository.upgrade() else {
+        return;
+    };
+    let target = repository.read(cx).branch.as_ref().and_then(|branch| {
+        let upstream = branch.upstream.as_ref()?;
+        Some((
+            upstream.remote_name()?.to_string(),
+            upstream.branch_name()?.to_string(),
+        ))
+    });
+    let Some((remote, remote_branch)) = target else {
+        Task::ready(Err::<(), _>(anyhow::anyhow!(
+            "The current branch has no upstream branch to push to."
+        )))
+        .detach_and_prompt_err("Push failed", window, cx, |_, _, _| None);
+        return;
+    };
+    interactive_rebase::confirm_then(
+        format!(
+            "Push commits up to {} to {remote}/{remote_branch}?",
+            sha.display_short()
+        ),
+        "Push",
+        window,
+        cx,
+        move |window, cx| {
+            let receiver = repository.update(cx, |repository, cx| {
+                repository.run_git_command(
+                    vec!["push".into(), remote, format!("{sha}:refs/heads/{remote_branch}")],
+                    cx,
+                )
+            });
+            spawn_git_job(receiver, "Push failed", window, cx);
+        },
+    );
 }
 
 fn open_modal<V: ModalView>(

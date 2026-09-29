@@ -6911,6 +6911,42 @@ impl GitPanel {
             ))
     }
 
+    fn render_rebase_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let repository = self.active_repository.as_ref()?.read(cx);
+        // ponytail: two stats per render; move into the repository snapshot if it shows up in profiles.
+        let git_dir = &repository.repository_dir_abs_path;
+        let rebasing = git_dir.join(git::REBASE_MERGE_DIR).exists() || git_dir.join("rebase-apply").exists();
+        if !rebasing {
+            return None;
+        }
+        Some(
+            h_flex()
+                .px_2()
+                .py_1()
+                .gap_1()
+                .border_b_1()
+                .border_color(cx.theme().colors().border_variant)
+                .bg(cx.theme().colors().version_control_conflict_marker_ours)
+                .child(Label::new("Rebasing").size(LabelSize::Small))
+                .child(div().flex_1())
+                .child(
+                    Button::new("rebase-continue", "Continue Rebasing")
+                        .label_size(LabelSize::Small)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(git::ContinueRebase), cx)
+                        }),
+                )
+                .child(
+                    Button::new("rebase-abort", "Abort Rebasing")
+                        .label_size(LabelSize::Small)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(git::AbortRebase), cx)
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_pending_amend(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .py_1p5()
@@ -9240,6 +9276,7 @@ impl Render for GitPanel {
                     .when(!self.commit_editor_expanded, |this| {
                         this.child(self.render_tab_bar(cx))
                     })
+                    .children(self.render_rebase_bar(cx))
                     .map(|this| match self.active_tab {
                         GitPanelTab::Changes => this
                             .children(self.render_changes_header(window, cx))

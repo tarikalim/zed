@@ -75,6 +75,7 @@ zed_actions.workspace = true
 ztracing.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 ctor.workspace = true
 db = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
