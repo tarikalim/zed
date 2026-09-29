@@ -207,6 +207,26 @@ pub fn init(cx: &mut App) {
                     panel.fetch(false, window, cx);
                 });
             });
+            workspace.register_action(|workspace, _: &git::CommitAndPush, window, cx| {
+                let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
+                    return;
+                };
+                panel.update(cx, |panel, cx| panel.commit_and_push(window, cx));
+            });
+            workspace.register_action(|workspace, _: &git::ShowCommitMessageHistory, window, cx| {
+                let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
+                    return;
+                };
+                panel.update(cx, |panel, cx| panel.show_commit_message_history(window, cx));
+            });
+            workspace.register_action(|workspace, _: &git::OpenCommitWindow, window, cx| {
+                let Some(panel) = workspace.focus_panel::<git_panel::GitPanel>(window, cx) else {
+                    return;
+                };
+                panel.update(cx, |panel, cx| {
+                    panel.focus_editor(&git_panel::FocusEditor, window, cx)
+                });
+            });
             workspace.register_action(|workspace, _: &git::Push, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                     return;

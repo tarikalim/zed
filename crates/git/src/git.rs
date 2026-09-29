@@ -113,6 +113,12 @@ actions!(
         FetchFrom,
         /// Creates a new commit with staged changes.
         Commit,
+        /// Commits the changes, then pushes the current branch.
+        CommitAndPush,
+        /// Shows recent commit messages to reuse in the commit message editor.
+        ShowCommitMessageHistory,
+        /// Opens the git panel and focuses the commit message editor.
+        OpenCommitWindow,
         /// Runs the next commit with `git commit --no-verify`.
         SkipHooks,
         /// Amends the last commit with staged changes.

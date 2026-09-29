@@ -1134,6 +1134,7 @@ pub struct GitPanel {
     diff_stat_total: DiffStat,
     new_staged_count: usize,
     pending_commit: Option<Task<()>>,
+    push_after_commit: bool,
     pending_remote_operation: Option<RemoteOperationKind>,
     amend_pending: bool,
     original_commit_message: Option<String>,
@@ -1447,6 +1448,7 @@ impl GitPanel {
                 changes_count: 0,
                 diff_stat_total: DiffStat::default(),
                 pending_commit: None,
+                push_after_commit: false,
                 pending_remote_operation: None,
                 amend_pending,
                 original_commit_message,
@@ -2401,7 +2403,12 @@ impl GitPanel {
         self.move_diff_to_entry(window, cx);
     }
 
-    fn focus_editor(&mut self, _: &FocusEditor, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_editor(
+        &mut self,
+        _: &FocusEditor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.commit_editor.update(cx, |editor, cx| {
             window.focus(&editor.focus_handle(cx), cx);
         });
@@ -3711,6 +3718,7 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let push_after_commit = std::mem::take(&mut self.push_after_commit);
         let Some(active_repository) = self.active_repository.clone() else {
             return;
         };
@@ -3790,6 +3798,9 @@ impl GitPanel {
                             this.original_commit_message = None;
                             this.serialize(cx);
                         }
+                        if push_after_commit {
+                            this.push(false, false, window, cx);
+                        }
                     }
                     Err(e) => this.show_error_toast("commit", e, cx),
                 }
@@ -3798,6 +3809,62 @@ impl GitPanel {
         });
 
         self.pending_commit = Some(task);
+    }
+
+    pub(crate) fn commit_and_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.push_after_commit = true;
+        let options = self.commit_options();
+        self.commit_changes(options, window, cx);
+    }
+
+    pub(crate) fn show_commit_message_history(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repository) = self.active_repository.clone() else {
+            return;
+        };
+        const SEPARATOR: char = '\u{1e}';
+        let log = repository.update(cx, |repository, _| {
+            repository.git_output(vec![
+                "log".into(),
+                "-n".into(),
+                "50".into(),
+                "--no-merges".into(),
+                format!("--format=%B{SEPARATOR}"),
+            ])
+        });
+        let workspace = self.workspace.clone();
+        let commit_editor = self.commit_editor.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let log = log.await??;
+            let mut messages: Vec<String> = Vec::new();
+            for message in log.split(SEPARATOR).map(str::trim).filter(|m| !m.is_empty()) {
+                if !messages.iter().any(|seen| seen == message) {
+                    messages.push(message.to_string());
+                }
+            }
+            let options = messages
+                .iter()
+                .map(|message| message.lines().next().unwrap_or_default().to_string().into())
+                .collect();
+            let selection = cx
+                .update(|window, cx| {
+                    picker_prompt::prompt("Commit Message History", options, workspace, window, cx)
+                })?
+                .await;
+            if let Some(message) = selection.and_then(|index| messages.get(index)) {
+                cx.update(|window, cx| {
+                    commit_editor.update(cx, |editor, cx| {
+                        editor.set_text(message.clone(), window, cx);
+                        editor.focus_handle(cx).focus(window, cx);
+                    })
+                })?;
+            }
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
     }
 
     pub(crate) fn uncommit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6275,6 +6342,14 @@ impl GitPanel {
                             .when_some(keybinding_target.clone(), |el, keybinding_target| {
                                 el.context(keybinding_target)
                             })
+                            .entry(
+                                "Commit and Push…",
+                                Some(Box::new(git::CommitAndPush)),
+                                move |window, cx| {
+                                    window.dispatch_action(Box::new(git::CommitAndPush), cx)
+                                },
+                            )
+                            .separator()
                             .when(has_previous_commit, |this| {
                                 this.toggleable_entry(
                                     "Amend",
