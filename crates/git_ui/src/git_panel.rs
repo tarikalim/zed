@@ -13,7 +13,7 @@ use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
 use crate::staged_diff::StagedDiff;
 use crate::unstaged_diff::UnstagedDiff;
-use crate::{branch_picker, changelists, picker_prompt, render_remote_button};
+use crate::{branch_picker, changelists, picker_prompt, render_remote_button, shelf};
 use crate::{
     git_panel_settings::GitPanelSettings, git_status_icon, repository_selector::RepositorySelector,
 };
@@ -169,6 +169,10 @@ actions!(
         ActivateChangesTab,
         /// Activates the History tab.
         ActivateHistoryTab,
+        /// Activates the Shelf tab in the git panel.
+        ActivateShelfTab,
+        /// Shelves the selected changes (JetBrains "Shelve Changes").
+        ShelveChanges,
     ]
 );
 
@@ -590,6 +594,7 @@ struct SerializedCommitMessage {
 enum GitPanelTab {
     Changes,
     History,
+    Shelf,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1169,6 +1174,8 @@ pub struct GitPanel {
     pending_commit: Option<Task<()>>,
     push_after_commit: bool,
     changelists: changelists::Changelists,
+    shelf: Vec<shelf::ShelvedChangelist>,
+    expanded_shelves: HashSet<std::path::PathBuf>,
     /// (staged, total) per changelist, rebuilt with the entries.
     changelist_counts: Vec<(usize, usize)>,
     pending_remote_operation: Option<RemoteOperationKind>,
@@ -1486,6 +1493,8 @@ impl GitPanel {
                 pending_commit: None,
                 push_after_commit: false,
                 changelists: Default::default(),
+                shelf: Vec::new(),
+                expanded_shelves: HashSet::default(),
                 changelist_counts: Vec::new(),
                 pending_remote_operation: None,
                 amend_pending,
@@ -2034,6 +2043,7 @@ impl GitPanel {
             match self.active_tab {
                 GitPanelTab::Changes => dispatch_context.add("ChangesList"),
                 GitPanelTab::History => dispatch_context.add("HistoryList"),
+                GitPanelTab::Shelf => dispatch_context.add("ShelfList"),
             }
         }
 
@@ -5254,7 +5264,24 @@ impl GitPanel {
                         .ok();
                 }
             };
-            menu.action("New Changelist…", NewChangelist.boxed_clone())
+            menu.entry("Shelve Changes…", None, {
+                let panel = panel.clone();
+                let name = name.clone();
+                move |window, cx| {
+                    panel
+                        .update(cx, |panel, cx| {
+                            let paths = panel
+                                .change_entries_by_path()
+                                .filter(|entry| panel.changelists.list_of(&entry.repo_path) == index)
+                                .map(|entry| entry.repo_path.clone())
+                                .collect();
+                            panel.shelve_paths(paths, name.clone(), window, cx);
+                        })
+                        .ok();
+                }
+            })
+            .separator()
+            .action("New Changelist…", NewChangelist.boxed_clone())
                 .entry("Rename Changelist…", None, {
                     let panel = panel.clone();
                     let workspace = workspace.clone();
@@ -7400,12 +7427,209 @@ impl GitPanel {
             )
             .child(tab(
                 ElementId::Name("history-tab".into()),
-                active_tab != GitPanelTab::Changes,
+                active_tab == GitPanelTab::History,
                 false,
                 "History".into(),
                 GitPanelTab::History,
                 ActivateHistoryTab.boxed_clone(),
             ))
+            .child(
+                Divider::vertical()
+                    .color(ui::DividerColor::BorderFaded)
+                    .h_full(),
+            )
+            .child(tab(
+                ElementId::Name("shelf-tab".into()),
+                active_tab == GitPanelTab::Shelf,
+                false,
+                "Shelf".into(),
+                GitPanelTab::Shelf,
+                ActivateShelfTab.boxed_clone(),
+            ))
+    }
+
+    fn reload_shelf(&mut self, cx: &mut Context<Self>) {
+        self.shelf = self
+            .active_repository
+            .as_ref()
+            .map(|repository| shelf::load(&repository.read(cx).repository_dir_abs_path))
+            .unwrap_or_default();
+        cx.notify();
+    }
+
+    fn shelve_paths(&mut self, paths: Vec<RepoPath>, default_name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(repository), Some(workspace)) = (self.active_repository.clone(), self.workspace.upgrade()) else {
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        let panel = cx.entity().downgrade();
+        let file_count = paths.len();
+        workspace.update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                shelf::ShelveModal::new(
+                    &default_name,
+                    file_count,
+                    move |name, window, cx| {
+                        let task = shelf::shelve(&repository, name, paths.clone(), cx);
+                        let panel = panel.clone();
+                        window
+                            .spawn(cx, async move |cx| {
+                                task.await?;
+                                panel.update(cx, |panel, cx| panel.reload_shelf(cx))?;
+                                anyhow::Ok(())
+                            })
+                            .detach_and_prompt_err("Shelve failed", window, cx, |_, _, _| None);
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+    }
+
+    fn shelve_changes(&mut self, _: &ShelveChanges, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self
+            .effective_status_entries()
+            .into_iter()
+            .map(|entry| entry.repo_path)
+            .collect();
+        self.shelve_paths(paths, changelists::DEFAULT_CHANGELIST.into(), window, cx);
+    }
+
+    fn render_shelf_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        if self.shelf.is_empty() {
+            return v_flex()
+                .flex_1()
+                .size_full()
+                .justify_center()
+                .items_center()
+                .child(Label::new("No shelved changes").color(Color::Muted))
+                .into_any_element();
+        }
+        let rows = self.shelf.iter().enumerate().map(|(index, shelved)| {
+            let expanded = self.expanded_shelves.contains(&shelved.directory);
+            let directory = shelved.directory.clone();
+            let date = time::OffsetDateTime::from_unix_timestamp(shelved.timestamp)
+                .map(|date| time_format::format_localized_timestamp(
+                    date,
+                    time::OffsetDateTime::now_utc(),
+                    time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
+                    time_format::TimestampFormat::Relative,
+                ))
+                .unwrap_or_default();
+            let files = shelved.files.clone();
+            let patch = shelved.patch_path();
+            v_flex()
+                .child(
+                    h_flex()
+                        .id(("shelf-entry", index))
+                        .group("shelf-entry")
+                        .px_2()
+                        .py_0p5()
+                        .gap_1()
+                        .hover(|this| this.bg(colors.element_hover))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.expanded_shelves.remove(&directory) {
+                                this.expanded_shelves.insert(directory.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(Label::new(shelved.name.clone()).size(LabelSize::Small).truncate())
+                        .child(Label::new(date).size(LabelSize::XSmall).color(Color::Muted))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new(("unshelve", index), "Unshelve")
+                                .label_size(LabelSize::Small)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.unshelve_at(index, window, cx)
+                                })),
+                        )
+                        .child(
+                            IconButton::new(("shelf-diff", index), IconName::Diff)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Show Diff"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_shelved_patch(patch.clone(), window, cx)
+                                })),
+                        )
+                        .child(
+                            IconButton::new(("shelf-delete", index), IconName::Trash)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Delete"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.delete_shelved_at(index, window, cx)
+                                })),
+                        ),
+                )
+                .when(expanded, |this| {
+                    this.children(files.into_iter().map(|file| {
+                        h_flex()
+                            .pl_7()
+                            .py_0p5()
+                            .child(Label::new(file).size(LabelSize::Small).color(Color::Muted).truncate())
+                    }))
+                })
+        });
+        v_flex()
+            .id("shelf-list")
+            .flex_1()
+            .size_full()
+            .overflow_y_scroll()
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn unshelve_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(repository), Some(shelved)) = (self.active_repository.clone(), self.shelf.get(index).cloned()) else {
+            return;
+        };
+        let task = shelf::unshelve(&repository, &shelved, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| this.reload_shelf(cx))?;
+            result
+        })
+        .detach_and_prompt_err("Unshelve failed", window, cx, |_, _, _| None);
+    }
+
+    fn delete_shelved_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shelved) = self.shelf.get(index).cloned() else {
+            return;
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete shelved changes '{}'?", shelved.name),
+            None,
+            &["Delete", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await == Ok(0) {
+                shelf::delete(&shelved)?;
+                this.update(cx, |this, cx| this.reload_shelf(cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach_and_prompt_err("Delete failed", window, cx, |_, _, _| None);
+    }
+
+    fn open_shelved_patch(&mut self, patch: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .open_abs_path(patch, workspace::OpenOptions::default(), window, cx)
+                    .detach_and_log_err(cx);
+            });
+        }
     }
 
     fn render_history_tab(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7562,6 +7786,7 @@ impl GitPanel {
                 self.set_commit_history(CommitHistory::Loading, cx);
                 self._repo_subscriptions.clear();
             }
+            GitPanelTab::Shelf => self.reload_shelf(cx),
         }
         cx.notify();
     }
@@ -8596,6 +8821,8 @@ impl GitPanel {
                 .separator()
                 .action("Copy Path", CopyPath.boxed_clone())
                 .action("Copy Relative Path", CopyRelativePath.boxed_clone())
+                .separator()
+                .action("Shelve Changes…", ShelveChanges.boxed_clone())
                 .when(group_by_changelist, |menu| {
                         menu.separator().action(
                             "Move to Another Changelist…",
@@ -9575,6 +9802,10 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::set_group_by_staging))
             .on_action(cx.listener(Self::set_group_by_changelist))
             .on_action(cx.listener(Self::move_to_another_changelist))
+            .on_action(cx.listener(Self::shelve_changes))
+            .on_action(cx.listener(|this, _: &ActivateShelfTab, window, cx| {
+                this.set_active_tab(GitPanelTab::Shelf, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &NewChangelist, window, cx| {
                 this.new_changelist(Vec::new(), window, cx)
             }))
@@ -9621,6 +9852,7 @@ impl Render for GitPanel {
                                 this.children(self.render_previous_commit(window, cx))
                             }),
                         GitPanelTab::History => this.child(self.render_history_tab(window, cx)),
+                        GitPanelTab::Shelf => this.child(self.render_shelf_tab(cx)),
                     })
                     .into_any_element(),
             )

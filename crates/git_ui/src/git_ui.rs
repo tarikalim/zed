@@ -51,6 +51,7 @@ mod conflicts_dialog;
 mod interactive_rebase;
 mod log_actions;
 mod merge_tool;
+mod shelf;
 mod stash_dialogs;
 pub mod multi_diff_view;
 pub mod picker_prompt;
