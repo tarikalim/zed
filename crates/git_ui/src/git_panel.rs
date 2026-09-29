@@ -13,7 +13,7 @@ use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
 use crate::staged_diff::StagedDiff;
 use crate::unstaged_diff::UnstagedDiff;
-use crate::{branch_picker, picker_prompt, render_remote_button};
+use crate::{branch_picker, changelists, picker_prompt, render_remote_button};
 use crate::{
     git_panel_settings::GitPanelSettings, git_status_icon, repository_selector::RepositorySelector,
 };
@@ -149,6 +149,12 @@ actions!(
         SetGroupByStatus,
         /// Groups entries by staging state.
         SetGroupByStaging,
+        /// Groups entries by JetBrains-style changelists.
+        SetGroupByChangelist,
+        /// Moves the selected files to another changelist.
+        MoveToAnotherChangelist,
+        /// Creates a new changelist.
+        NewChangelist,
         /// Toggles showing entries in tree vs flat view.
         ToggleTreeView,
         /// Expands the selected entry to show its children.
@@ -480,6 +486,23 @@ fn git_panel_view_options_menu(
             })
             .item({
                 let view_options_menu_state = view_options_menu_state.clone();
+                ContextMenuEntry::new("Changelists")
+                    .toggle(
+                        IconPosition::End,
+                        state.group_by == GitPanelGroupBy::Changelist,
+                    )
+                    .handler(move |window, cx| {
+                        if state.group_by != GitPanelGroupBy::Changelist {
+                            view_options_menu_state.set(GitPanelViewOptionsMenuState {
+                                group_by: GitPanelGroupBy::Changelist,
+                                ..state
+                            });
+                            window.dispatch_action(Box::new(SetGroupByChangelist), cx);
+                        }
+                    })
+            })
+            .item({
+                let view_options_menu_state = view_options_menu_state.clone();
                 ContextMenuEntry::new("Staged & Unstaged")
                     .toggle(
                         IconPosition::End,
@@ -601,6 +624,7 @@ enum Section {
     New,
     Staged,
     Unstaged,
+    Changelist(u16),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -694,6 +718,8 @@ impl GitHeaderEntry {
                 !repo.had_conflict_on_last_merge_head_change(&status_entry.repo_path)
                     && GitPanel::stage_status_for_entry(status_entry, repo).has_unstaged()
             }
+            // Membership lives on the panel; see `GitPanel::section_contains`.
+            Section::Changelist(_) => false,
         }
     }
     pub fn title(&self) -> &'static str {
@@ -703,6 +729,7 @@ impl GitHeaderEntry {
             Section::New => "Untracked",
             Section::Staged => "Staged",
             Section::Unstaged => "Unstaged",
+            Section::Changelist(_) => changelists::DEFAULT_CHANGELIST,
         }
     }
 }
@@ -1141,6 +1168,9 @@ pub struct GitPanel {
     new_staged_count: usize,
     pending_commit: Option<Task<()>>,
     push_after_commit: bool,
+    changelists: changelists::Changelists,
+    /// (staged, total) per changelist, rebuilt with the entries.
+    changelist_counts: Vec<(usize, usize)>,
     pending_remote_operation: Option<RemoteOperationKind>,
     amend_pending: bool,
     original_commit_message: Option<String>,
@@ -1455,6 +1485,8 @@ impl GitPanel {
                 diff_stat_total: DiffStat::default(),
                 pending_commit: None,
                 push_after_commit: false,
+                changelists: Default::default(),
+                changelist_counts: Vec::new(),
                 pending_remote_operation: None,
                 amend_pending,
                 original_commit_message,
@@ -3248,7 +3280,7 @@ impl GitPanel {
                     let entries = self
                         .change_entries_by_path()
                         .filter(|status_entry| {
-                            section.contains(status_entry, &repo)
+                            self.section_contains(section.header, status_entry, &repo)
                                 && GitPanel::stage_status_for_entry(status_entry, &repo).as_bool()
                                     != Some(goal_staged_state)
                         })
@@ -5091,6 +5123,181 @@ impl GitPanel {
         }
     }
 
+    fn set_group_by_changelist(
+        &mut self,
+        _: &SetGroupByChangelist,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            let fs = workspace.read(cx).app_state().fs.clone();
+            cx.update_global::<SettingsStore, _>(|store, _cx| {
+                store.update_settings_file(fs, move |settings, _cx| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Changelist);
+                });
+            });
+        }
+    }
+
+    fn update_changelists(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut changelists::Changelists),
+    ) {
+        change(&mut self.changelists);
+        self.update_visible_entries(window, cx);
+        cx.notify();
+    }
+
+    fn move_to_another_changelist(
+        &mut self,
+        _: &MoveToAnotherChangelist,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths: Vec<RepoPath> = self
+            .effective_status_entries()
+            .into_iter()
+            .map(|entry| entry.repo_path)
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let mut options: Vec<SharedString> = self
+            .changelists
+            .lists
+            .iter()
+            .map(|list| list.name.clone().into())
+            .collect();
+        options.push("New Changelist…".into());
+        let new_index = options.len() - 1;
+        let prompt = picker_prompt::prompt(
+            "Move to Another Changelist",
+            options,
+            self.workspace.clone(),
+            window,
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(choice) = prompt.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                if choice == new_index {
+                    this.new_changelist(paths, window, cx);
+                } else {
+                    this.update_changelists(window, cx, |changelists| {
+                        changelists.move_paths(&paths, choice)
+                    });
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn new_changelist(&mut self, paths: Vec<RepoPath>, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.entity().downgrade();
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                changelists::ChangelistNameModal::new(
+                    "New Changelist",
+                    "",
+                    move |name, window, cx| {
+                        let paths = paths.clone();
+                        panel
+                            .update(cx, |panel, cx| {
+                                panel.update_changelists(window, cx, |changelists| {
+                                    let index = changelists.add(name, false);
+                                    changelists.move_paths(&paths, index);
+                                })
+                            })
+                            .ok();
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+    }
+
+    fn deploy_changelist_context_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = cx.entity().downgrade();
+        let is_active = self.changelists.active == index;
+        let can_delete = self.changelists.lists.len() > 1;
+        let name = self
+            .changelists
+            .lists
+            .get(index)
+            .map(|list| list.name.clone())
+            .unwrap_or_default();
+        let workspace = self.workspace.clone();
+        let menu = ContextMenu::build(window, cx, move |menu, _, _| {
+            let update = |change: fn(&mut changelists::Changelists, usize)| {
+                let panel = panel.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    panel
+                        .update(cx, |panel, cx| {
+                            panel.update_changelists(window, cx, |changelists| change(changelists, index))
+                        })
+                        .ok();
+                }
+            };
+            menu.action("New Changelist…", NewChangelist.boxed_clone())
+                .entry("Rename Changelist…", None, {
+                    let panel = panel.clone();
+                    let workspace = workspace.clone();
+                    let name = name.clone();
+                    move |window, cx| {
+                        let panel = panel.clone();
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.toggle_modal(window, cx, |window, cx| {
+                                    changelists::ChangelistNameModal::new(
+                                        "Rename Changelist",
+                                        &name,
+                                        move |new_name, window, cx| {
+                                            panel
+                                                .update(cx, |panel, cx| {
+                                                    panel.update_changelists(window, cx, |changelists| {
+                                                        changelists.rename(index, new_name)
+                                                    })
+                                                })
+                                                .ok();
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            })
+                            .ok();
+                    }
+                })
+                .item(
+                    ContextMenuEntry::new("Delete Changelist")
+                        .disabled(!can_delete)
+                        .handler(update(|changelists, index| changelists.delete(index))),
+                )
+                .item(
+                    ContextMenuEntry::new("Set Active Changelist")
+                        .disabled(is_active)
+                        .handler(update(|changelists, index| changelists.set_active(index))),
+                )
+        });
+        self.set_context_menu(menu, position, None, window, cx);
+    }
+
     fn set_group_by_staging(
         &mut self,
         _: &SetGroupByStaging,
@@ -5415,6 +5622,7 @@ impl GitPanel {
         let group_by = settings.group_by;
         let group_by_file_status = group_by == GitPanelGroupBy::Status;
         let group_by_staging_state = group_by == GitPanelGroupBy::Staging;
+        let group_by_changelist = group_by == GitPanelGroupBy::Changelist;
         let is_tree_view = matches!(self.view_mode, GitPanelViewMode::Tree(_));
 
         if let Some(active_repo) = self.active_repository.as_ref() {
@@ -5465,6 +5673,15 @@ impl GitPanel {
         let repo = repo.read(cx);
 
         self.stash_entries = repo.cached_stash();
+        if group_by_changelist {
+            let git_dir = &repo.repository_dir_abs_path;
+            if self.changelists.location().and_then(|path| path.parent()) != Some(git_dir.as_ref()) {
+                self.changelists = changelists::Changelists::load(git_dir);
+            }
+        }
+        let mut changelist_entries: Vec<Vec<GitStatusEntry>> =
+            vec![Vec::new(); self.changelists.lists.len()];
+        self.changelist_counts = vec![(0, 0); self.changelists.lists.len()];
 
         for status_entry in repo.cached_status() {
             self.changes_count += 1;
@@ -5511,6 +5728,20 @@ impl GitPanel {
                         diff_stat: status_entry.unstaged_diff_stat,
                         ..entry
                     });
+                }
+            } else if group_by_changelist && is_conflict {
+                conflict_entries.push(entry);
+            } else if group_by_changelist {
+                let index = self.changelists.list_of(&entry.repo_path);
+                if let (Some(entries), Some(counts)) = (
+                    changelist_entries.get_mut(index),
+                    self.changelist_counts.get_mut(index),
+                ) {
+                    counts.1 += 1;
+                    if staging.has_staged() && !staging.has_unstaged() {
+                        counts.0 += 1;
+                    }
+                    entries.push(entry);
                 }
             } else if group_by_file_status && is_conflict {
                 conflict_entries.push(entry);
@@ -5566,6 +5797,7 @@ impl GitPanel {
             sort_entries(&mut new_entries);
             sort_entries(&mut staged_entries);
             sort_entries(&mut unstaged_entries);
+            changelist_entries.iter_mut().for_each(sort_entries);
         }
 
         let mut push_entry =
@@ -5601,7 +5833,16 @@ impl GitPanel {
                 this.entries.push(entry);
             };
 
-        let section_entries = if group_by_staging_state {
+        let section_entries = if group_by_changelist {
+            std::iter::once((Section::Conflict, std::mem::take(&mut conflict_entries)))
+                .chain(
+                    changelist_entries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, entries)| (Section::Changelist(index as u16), entries)),
+                )
+                .collect()
+        } else if group_by_staging_state {
             vec![
                 (Section::Conflict, std::mem::take(&mut conflict_entries)),
                 (Section::Staged, std::mem::take(&mut staged_entries)),
@@ -5621,9 +5862,11 @@ impl GitPanel {
             .iter()
             .any(|(_, entries)| !entries.is_empty());
         let show_when_empty = |section: Section| {
-            group_by_staging_state
+            (group_by_staging_state
                 && has_any_section_entries
-                && matches!(section, Section::Staged | Section::Unstaged)
+                && matches!(section, Section::Staged | Section::Unstaged))
+                // JetBrains always shows every changelist, even empty ones.
+                || matches!(section, Section::Changelist(_))
         };
 
         match &mut self.view_mode {
@@ -5775,6 +6018,16 @@ impl GitPanel {
         cx.notify();
     }
 
+    fn section_contains(&self, section: Section, entry: &GitStatusEntry, repo: &Repository) -> bool {
+        match section {
+            Section::Changelist(index) => {
+                !repo.had_conflict_on_last_merge_head_change(&entry.repo_path)
+                    && self.changelists.list_of(&entry.repo_path) == index as usize
+            }
+            section => GitHeaderEntry { header: section }.contains(entry, repo),
+        }
+    }
+
     fn header_state(&self, header_type: Section) -> ToggleState {
         let (staged_count, count) = match header_type {
             Section::New => (self.new_staged_count, self.new_count),
@@ -5782,6 +6035,11 @@ impl GitPanel {
             Section::Conflict => (self.conflicted_staged_count, self.conflicted_count),
             Section::Staged => (self.entry_count, self.entry_count),
             Section::Unstaged => (0, self.entry_count),
+            Section::Changelist(index) => self
+                .changelist_counts
+                .get(index as usize)
+                .copied()
+                .unwrap_or_default(),
         };
         if staged_count == 0 {
             ToggleState::Unselected
@@ -8113,6 +8371,21 @@ impl GitPanel {
         h_flex()
             .id(id)
             .group(group_name)
+            .when_some(
+                match section {
+                    Section::Changelist(index) => Some(index as usize),
+                    _ => None,
+                },
+                |this, index| {
+                    this.on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.deploy_changelist_context_menu(index, event.position, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                },
+            )
             .h(self.list_item_height())
             .w_full()
             .pl_2p5()
@@ -8135,11 +8408,42 @@ impl GitPanel {
                         .size(IconSize::XSmall)
                         .color(Color::Muted),
                     )
-                    .child(
-                        Label::new(header.title())
+                    .child(match section {
+                        Section::Changelist(index) => {
+                            let is_active = self.changelists.active == index as usize;
+                            let name = self
+                                .changelists
+                                .lists
+                                .get(index as usize)
+                                .map(|list| list.name.clone())
+                                .unwrap_or_default();
+                            let count = self
+                                .changelist_counts
+                                .get(index as usize)
+                                .map(|(_, total)| *total)
+                                .unwrap_or_default();
+                            h_flex()
+                                .gap_1p5()
+                                .child(
+                                    Label::new(name)
+                                        .color(if is_active { Color::Default } else { Color::Muted })
+                                        .size(LabelSize::Small),
+                                )
+                                .child(
+                                    Label::new(match count {
+                                        1 => "1 file".to_string(),
+                                        count => format!("{count} files"),
+                                    })
+                                    .color(Color::Muted)
+                                    .size(LabelSize::XSmall),
+                                )
+                                .into_any_element()
+                        }
+                        _ => Label::new(header.title())
                             .color(Color::Muted)
-                            .size(LabelSize::Small),
-                    )
+                            .size(LabelSize::Small)
+                            .into_any_element(),
+                    })
                     .when(section == Section::Conflict && !all_conflicts_resolved, |this| {
                         this.child(
                             Button::new(("resolve-conflicts", ix), "Resolve")
@@ -8278,6 +8582,8 @@ impl GitPanel {
 
         let is_bulk = matches!(target_kind, SelectionTargetKind::Multiple);
         let is_file = matches!(target_kind, SelectionTargetKind::File);
+        let group_by_changelist =
+            GitPanelSettings::get_global(cx).group_by == GitPanelGroupBy::Changelist;
 
         ContextMenu::build(window, cx, |context_menu, _, _| {
             context_menu
@@ -8290,6 +8596,12 @@ impl GitPanel {
                 .separator()
                 .action("Copy Path", CopyPath.boxed_clone())
                 .action("Copy Relative Path", CopyRelativePath.boxed_clone())
+                .when(group_by_changelist, |menu| {
+                        menu.separator().action(
+                            "Move to Another Changelist…",
+                            MoveToAnotherChangelist.boxed_clone(),
+                        )
+                })
                 .separator()
                 .action_disabled_when(
                     !all_created || is_bulk,
@@ -9261,6 +9573,11 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::set_group_by_none))
             .on_action(cx.listener(Self::set_group_by_status))
             .on_action(cx.listener(Self::set_group_by_staging))
+            .on_action(cx.listener(Self::set_group_by_changelist))
+            .on_action(cx.listener(Self::move_to_another_changelist))
+            .on_action(cx.listener(|this, _: &NewChangelist, window, cx| {
+                this.new_changelist(Vec::new(), window, cx)
+            }))
             .on_action(cx.listener(Self::toggle_tree_view))
             .on_action(cx.listener(Self::increase_font_size))
             .on_action(cx.listener(Self::decrease_font_size))
@@ -9980,6 +10297,13 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
+            // These tests predate this fork's changelist default.
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Status);
+                });
+            });
             theme_settings::init(LoadThemes::JustBase, cx);
             language_model::init(cx);
             editor::init(cx);

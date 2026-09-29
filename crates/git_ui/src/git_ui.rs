@@ -46,6 +46,7 @@ pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
+mod changelists;
 mod conflicts_dialog;
 mod interactive_rebase;
 mod log_actions;

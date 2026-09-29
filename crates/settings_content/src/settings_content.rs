@@ -879,6 +879,8 @@ pub enum GitPanelGroupBy {
     #[default]
     Status,
     Staging,
+    /// JetBrains-style changelists.
+    Changelist,
 }
 
 #[derive(

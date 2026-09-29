@@ -1022,6 +1022,8 @@ mod tests {
             cx.update_global::<SettingsStore, _>(|store, cx| {
                 store.update_user_settings(cx, |settings| {
                     settings.editor.diff_view_style = Some(DiffViewStyle::Unified);
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(settings::GitPanelGroupBy::Status);
                 });
             });
             theme_settings::init(theme::LoadThemes::JustBase, cx);
