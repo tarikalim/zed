@@ -138,7 +138,7 @@ pub(crate) fn shelve(
     })
 }
 
-/// Applies a shelved changelist and removes it from the shelf.
+/// Applies a shelved changelist unstaged (as JetBrains does) and removes it from the shelf.
 pub(crate) fn unshelve(
     repository: &Entity<Repository>,
     shelved: &ShelvedChangelist,
@@ -146,11 +146,40 @@ pub(crate) fn unshelve(
 ) -> Task<anyhow::Result<()>> {
     let patch = shelved.patch_path().to_string_lossy().into_owned();
     let directory = shelved.directory.clone();
-    let apply = repository.update(cx, |repository, cx| {
-        repository.run_git_command(vec!["apply".into(), "--3way".into(), patch], cx)
-    });
-    cx.background_spawn(async move {
-        apply.await??;
+    let files = shelved.files.clone();
+    let repository = repository.clone();
+    cx.spawn(async move |cx| {
+        let run = |args: Vec<String>, cx: &mut gpui::AsyncApp| {
+            repository.update(cx, |repository, cx| repository.run_git_command(args, cx))
+        };
+        let with_files = |mut args: Vec<String>| {
+            args.push("--".into());
+            args.extend(files.iter().cloned());
+            args
+        };
+        run(vec!["apply".into(), "--3way".into(), patch], cx).await??;
+        // `--3way` stages what it applies; unstage it, keeping new files visible as intent-to-add.
+        run(with_files(vec!["reset".into(), "--quiet".into()]), cx).await??;
+        let untracked = repository
+            .update(cx, |repository, _| {
+                repository.git_output(with_files(vec![
+                    "ls-files".into(),
+                    "--others".into(),
+                    "--exclude-standard".into(),
+                    "-z".into(),
+                ]))
+            })
+            .await??;
+        let untracked: Vec<String> = untracked
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !untracked.is_empty() {
+            let mut args = vec!["add".into(), "--intent-to-add".into(), "--".into()];
+            args.extend(untracked);
+            run(args, cx).await??;
+        }
         std::fs::remove_dir_all(directory)?;
         Ok(())
     })

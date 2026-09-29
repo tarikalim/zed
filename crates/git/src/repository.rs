@@ -771,7 +771,9 @@ impl LogFilter {
     /// Author, date and path filters drop commits without rewriting parents, so the result
     /// cannot be drawn as a graph.
     pub fn is_linear(&self) -> bool {
-        !self.authors.is_empty()
+        // Ranges like `a...b` cut history, so parents may be missing too.
+        self.branches.iter().any(|branch| branch.contains(".."))
+            || !self.authors.is_empty()
             || self.since.is_some()
             || self.until.is_some()
             || !self.paths.is_empty()

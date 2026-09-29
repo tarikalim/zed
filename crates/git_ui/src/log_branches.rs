@@ -293,6 +293,7 @@ impl GitGraph {
         let sha = row.sha.as_ref().and_then(|sha| Oid::from_str(sha).ok());
 
         let repository_for_menu = repository.clone();
+        let graph = cx.entity().downgrade();
         let git = move |args: Vec<String>, error: &'static str| {
             let repository = repository.clone();
             move |window: &mut Window, cx: &mut App| {
@@ -362,6 +363,24 @@ impl GitGraph {
                         )
                     })
                     .separator()
+                    .when(!is_current, |menu| {
+                        let graph = graph.clone();
+                        let range: SharedString = format!("{current_label}...{name}").into();
+                        menu.entry(format!("Compare with '{current_label}'"), None, move |_, cx| {
+                            let range = range.clone();
+                            graph
+                                .update(cx, |graph, cx| {
+                                    graph.set_log_filter(
+                                        LogFilter {
+                                            branches: vec![range],
+                                            ..LogFilter::default()
+                                        },
+                                        cx,
+                                    )
+                                })
+                                .ok();
+                        })
+                    })
                     .entry("Show Diff with Working Tree", None, {
                         let workspace = workspace.clone();
                         let repository = repository_for_menu.clone();

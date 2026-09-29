@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use collections::HashSet;
 use editor::{
-    Anchor, Editor, RowHighlightOptions,
+    Anchor, Editor, RowHighlightOptions, ToPoint as _,
     display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId},
 };
 use git::repository::RepoPath;
@@ -227,7 +227,17 @@ struct ChangeHighlight {
 enum MergeConflictHighlight {}
 enum MergeChangeHighlight {}
 
+#[derive(Clone, Copy, PartialEq)]
+enum Pane {
+    Left,
+    Result,
+    Right,
+}
+
 pub(crate) struct MergeTool {
+    /// Chunk starts: anchor in the result, row in the left and right panes.
+    boundaries: Vec<(Anchor, u32, u32)>,
+    syncing_scroll: bool,
     repository: Entity<Repository>,
     repo_path: RepoPath,
     workspace: WeakEntity<Workspace>,
@@ -259,7 +269,23 @@ impl MergeTool {
         let mut conflicts_text = Vec::new();
         let mut changes = Vec::new();
         let rows = |range: &Range<usize>| range.start as u32..range.end as u32;
+        // Row where each chunk starts in (result, left, right), for synced scrolling.
+        let mut boundary_rows: Vec<(u32, u32, u32)> = Vec::new();
+        let (mut left_row, mut right_row) = (0u32, 0u32);
         for chunk in &chunks {
+            let result_row = result_text.matches('\n').count() as u32;
+            match chunk {
+                MergeChunk::Stable(range) => {
+                    boundary_rows.push((result_row, left_row, right_row));
+                    left_row += range.len() as u32;
+                    right_row += range.len() as u32;
+                }
+                MergeChunk::Change { ours, theirs, .. } => {
+                    boundary_rows.push((result_row, ours.start as u32, theirs.start as u32));
+                    left_row = ours.end as u32;
+                    right_row = theirs.end as u32;
+                }
+            }
             match chunk {
                 MergeChunk::Stable(range) => result_text.push_str(&join(&base_lines, range)),
                 MergeChunk::Change {
@@ -327,7 +353,24 @@ impl MergeTool {
             })
             .collect();
 
+        let boundaries = boundary_rows
+            .into_iter()
+            .map(|(result_row, left_row, right_row)| {
+                (snapshot.anchor_before(Point::new(result_row, 0)), left_row, right_row)
+            })
+            .collect();
+        for (pane, editor) in [(Pane::Left, &left), (Pane::Result, &result), (Pane::Right, &right)] {
+            cx.subscribe_in(editor, window, move |this, _, event: &editor::EditorEvent, window, cx| {
+                if let editor::EditorEvent::ScrollPositionChanged { local: true, .. } = event {
+                    this.sync_scroll(pane, window, cx);
+                }
+            })
+            .detach();
+        }
+
         let mut this = Self {
+            boundaries,
+            syncing_scroll: false,
             repository: input.repository,
             repo_path: input.repo_path,
             workspace: input.workspace,
@@ -345,6 +388,44 @@ impl MergeTool {
         };
         this.refresh_decorations(cx);
         this
+    }
+
+    fn boundary_rows(&self, pane: Pane, cx: &App) -> Vec<f64> {
+        let snapshot = self.result.read(cx).buffer().read(cx).snapshot(cx);
+        self.boundaries
+            .iter()
+            .map(|(anchor, left, right)| match pane {
+                Pane::Left => *left as f64,
+                Pane::Right => *right as f64,
+                Pane::Result => anchor.to_point(&snapshot).row as f64,
+            })
+            .collect()
+    }
+
+    // ponytail: maps scroll rows through chunk starts (display rows ~ buffer rows; the one-row
+    // conflict control blocks add slight drift). Per-row alignment would need spacer blocks.
+    fn sync_scroll(&mut self, source: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.syncing_scroll {
+            return;
+        }
+        self.syncing_scroll = true;
+        let editor = |pane: Pane| match pane {
+            Pane::Left => self.left.clone(),
+            Pane::Result => self.result.clone(),
+            Pane::Right => self.right.clone(),
+        };
+        let position = editor(source).update(cx, |editor, cx| editor.scroll_position(cx));
+        let source_rows = self.boundary_rows(source, cx);
+        for target in [Pane::Left, Pane::Result, Pane::Right] {
+            if target == source {
+                continue;
+            }
+            let y = map_row(&source_rows, &self.boundary_rows(target, cx), position.y);
+            editor(target).update(cx, |editor, cx| {
+                editor.set_scroll_position(gpui::point(position.x, y), window, cx);
+            });
+        }
+        self.syncing_scroll = false;
     }
 
     fn unresolved_count(&self) -> usize {
@@ -534,6 +615,18 @@ impl MergeTool {
     }
 }
 
+/// Maps a row through matching chunk starts: same offset into the chunk, clamped to its length.
+fn map_row(source_starts: &[f64], target_starts: &[f64], row: f64) -> f64 {
+    let index = source_starts.iter().rposition(|start| *start <= row).unwrap_or(0);
+    let offset = row - source_starts.get(index).copied().unwrap_or(0.);
+    let start = target_starts.get(index).copied().unwrap_or(0.);
+    let chunk_len = target_starts
+        .get(index + 1)
+        .map(|next| next - start)
+        .unwrap_or(f64::MAX);
+    start + offset.min(chunk_len)
+}
+
 fn render_conflict_controls(
     index: usize,
     this: WeakEntity<MergeTool>,
@@ -671,6 +764,18 @@ impl Render for MergeTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_map_row() {
+        // Chunks start at rows 0, 10, 12 in the source and 0, 10, 20 in the target.
+        let source = [0., 10., 12.];
+        let target = [0., 10., 20.];
+        assert_eq!(map_row(&source, &target, 5.), 5.);
+        assert_eq!(map_row(&source, &target, 11.), 11.);
+        assert_eq!(map_row(&source, &target, 15.), 23.);
+        // A longer source chunk clamps to the shorter target chunk.
+        assert_eq!(map_row(&target, &source, 15.), 12.);
+    }
 
     #[test]
     fn test_merge3() {
