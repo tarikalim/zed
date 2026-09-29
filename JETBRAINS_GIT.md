@@ -27,7 +27,7 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 3 | Branches tree in Log | left pane: HEAD, Local, Remote, Tags | `log_branches.rs`: toggleable 220px pane, `/` folders, current branch starred; click selects the tip commit, double-click filters the Log by that branch; menu: Checkout (remote → `switch --track`, tag → detached), New Branch from…, Checkout and Rebase onto current, Show Diff with Working Tree, Rebase current onto, Merge into current, Rename…, Delete (with confirm; remote → `push --delete`). Later: Compare with current (commit lists both ways), Update/Push/Pull per branch, favorites, pane search | ✅ |
 | 4 | Commit window gaps | Commit tool window | "Commit and Push…" in the commit split menu (`git::CommitAndPush`, pushes after a successful commit), Commit Message History (`git::ShowCommitMessageHistory`, last 50 messages via picker), `git::OpenCommitWindow` (opens panel + focuses message). JetBrains keymap (macOS): ⌘K commit window, ⌥⌘K commit and push, ⇧⌘K push (existing), ⌘T update (pull), ⌘9 Log, ⌃M message history, ⌘D diff in Log. Later: Push dialog listing outgoing commits (JetBrains shows it before pushing) | ✅ |
 | 5 | Diff chunk arrows | `>>` / `<<` in diff gutter | Per-chunk revert/accept arrows in split diff, "N differences" counter, next/prev difference | ⬜ |
-| 6 | Stash gaps | Stash Changes / Unstash dialogs | Keep index, Clear, Pop vs Apply toggle, "As new branch" on unstash | ⬜ |
+| 6 | Stash gaps | Stash Changes / Unstash dialogs | `stash_dialogs.rs`: `git::StashChanges` (Git root, Current branch, Message, Keep index → Create Stash) and `git::UnstashChanges` (stash list, View/Drop/Clear with confirm, Pop stash, Reinstate index, As new branch → Apply/Pop Stash/Create Branch); both in the git panel's changes menu | ✅ |
 | 7 | Conflicts dialog | Conflicts: file list + Accept Yours / Accept Theirs / Merge… | Modal listing conflicted files; accept-side via `git checkout --ours/--theirs` + stage | ⬜ |
 | 8 | 3-pane merge tool | Merge Revisions window | Left (yours) · Result · Right (theirs), per-chunk apply arrows, Apply button | ⬜ |
 | 9 | Interactive rebase | Interactively Rebase from Here… | Table of commits: pick/reword/edit/squash/fixup/drop, drag to reorder; drives `git rebase -i` with a generated todo via `GIT_SEQUENCE_EDITOR` | ⬜ |
@@ -47,3 +47,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | 2 | Log filters done; real-git test for filtered log, 29/29 git_graph tests pass |
 | 2026-09-30 | 3 | Branches pane done; tree unit test, 30/30 git_graph tests pass |
 | 2026-09-30 | 4 | Commit window gaps done; 71/71 git_panel tests pass |
+| 2026-09-30 | 6 | Stash dialogs done (step 5 next; done out of order while the editor was mapped) |

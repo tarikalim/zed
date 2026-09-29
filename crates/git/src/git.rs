@@ -87,6 +87,10 @@ actions!(
         StashTracked,
         /// Stashes staged changes in the repository, leaving unstaged changes in place.
         StashStaged,
+        /// Opens the "Stash Changes" dialog.
+        StashChanges,
+        /// Opens the "Unstash Changes" dialog.
+        UnstashChanges,
         /// Pops the most recent stash.
         StashPop,
         /// Apply the most recent stash.

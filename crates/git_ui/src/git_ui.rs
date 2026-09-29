@@ -47,6 +47,7 @@ mod git_panel_settings;
 pub mod git_picker;
 mod git_runtime_diagnostics;
 mod log_actions;
+mod stash_dialogs;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
@@ -207,6 +208,7 @@ pub fn init(cx: &mut App) {
                     panel.fetch(false, window, cx);
                 });
             });
+            stash_dialogs::register(workspace);
             workspace.register_action(|workspace, _: &git::CommitAndPush, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                     return;

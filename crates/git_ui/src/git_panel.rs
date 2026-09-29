@@ -324,6 +324,12 @@ fn git_panel_context_menu(
             .separator()
             .action_disabled_when(
                 !(has_new_changes || has_tracked_changes),
+                "Stash Changes…",
+                git::StashChanges.boxed_clone(),
+            )
+            .action("Unstash Changes…", git::UnstashChanges.boxed_clone())
+            .action_disabled_when(
+                !(has_new_changes || has_tracked_changes),
                 "Stash All",
                 StashAll.boxed_clone(),
             )
