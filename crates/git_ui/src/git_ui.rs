@@ -48,6 +48,7 @@ pub mod git_picker;
 mod git_runtime_diagnostics;
 mod conflicts_dialog;
 mod log_actions;
+mod merge_tool;
 mod stash_dialogs;
 pub mod multi_diff_view;
 pub mod picker_prompt;

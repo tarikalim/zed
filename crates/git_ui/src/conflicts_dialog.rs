@@ -4,7 +4,7 @@ use gpui::{
     Task, WeakEntity, Window,
 };
 use menu::{Cancel, SelectNext, SelectPrevious};
-use project::{ProjectPath, git_store::Repository};
+use project::git_store::Repository;
 use ui::prelude::*;
 use workspace::{ModalView, Workspace, notifications::DetachAndPromptErr};
 
@@ -126,14 +126,12 @@ impl ConflictsModal {
         let Some(path) = self.conflicts(cx).get(self.selected).cloned() else {
             return;
         };
-        let Some(project_path) = self
-            .repository
-            .read(cx)
-            .repo_path_to_project_path(&path, cx)
-        else {
-            return;
-        };
-        open_project_path(&self.workspace, project_path, window, cx);
+        let repository = self.repository.clone();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                crate::merge_tool::open(workspace, repository, path, window, cx)
+            })
+            .ok();
         cx.emit(DismissEvent);
     }
 
@@ -153,21 +151,6 @@ impl ConflictsModal {
         self.selected = self.selected.saturating_sub(1);
         cx.notify();
     }
-}
-
-fn open_project_path(
-    workspace: &WeakEntity<Workspace>,
-    project_path: ProjectPath,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    workspace
-        .update(cx, |workspace, cx| {
-            workspace
-                .open_path(project_path, None, true, window, cx)
-                .detach_and_log_err(cx);
-        })
-        .ok();
 }
 
 impl EventEmitter<DismissEvent> for ConflictsModal {}
