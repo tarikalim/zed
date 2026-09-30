@@ -201,6 +201,11 @@
   },
   { "context": "GitPanel", "bindings": { "cmd-0": "workspace::CloseActiveDock" } },
   {
+    // JetBrains Rollback (asks first, like JetBrains' Rollback Changes dialog).
+    "context": "GitPanel && ChangesList && !GitBranchSelector && !GitRepositorySelector",
+    "bindings": { "cmd-alt-z": ["git::RestoreFile", { "skip_prompt": false }] },
+  },
+  {
     "context": "SearchEverywhere > Picker > Editor",
     "bindings": { "tab": "search_everywhere::NextTab", "shift-tab": "search_everywhere::PreviousTab" },
   },
