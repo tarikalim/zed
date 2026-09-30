@@ -1145,7 +1145,8 @@
     //
     // Choices: project_diff, file_diff, view_file
     // Default: project_diff
-    "entry_primary_click_action": "project_diff",
+    // This fork: one file at a time with the changed files listed on the left, like JetBrains.
+    "entry_primary_click_action": "file_diff",
   },
   "agent": {
     // Whether the inline assistant should use streaming tools, when available

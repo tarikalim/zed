@@ -554,9 +554,100 @@ impl Item for SoloDiffView {
     }
 }
 
+impl SoloDiffView {
+    /// Shows another changed file in this tab, like JetBrains' diff viewer file list.
+    fn switch_to(&mut self, entry: GitStatusEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if entry.repo_path == self.repo_path {
+            return;
+        }
+        let repository = self.repository.clone();
+        let workspace = self.workspace.clone();
+        let item_id = cx.entity_id();
+        // Opened from a task: `open_or_focus` reads every open diff view, including this one.
+        cx.spawn_in(window, async move |_, cx| {
+            let task = cx.update(|window, cx| {
+                Self::open_or_focus(entry, repository, workspace.clone(), window, cx)
+            })?;
+            task.await?;
+            workspace.update_in(cx, |workspace, window, cx| {
+                for pane in workspace.panes().to_vec() {
+                    pane.update(cx, |pane, cx| {
+                        if pane.items().any(|item| item.item_id() == item_id) {
+                            pane.close_item_by_id(item_id, workspace::SaveIntent::Skip, window, cx)
+                                .detach_and_log_err(cx);
+                        }
+                    });
+                }
+            })?;
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
+    fn render_changed_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let entries: Vec<GitStatusEntry> = self
+            .repository
+            .read(cx)
+            .cached_status()
+            .map(|entry| GitStatusEntry {
+                staging: entry.status.staging(),
+                repo_path: entry.repo_path,
+                status: entry.status,
+                diff_stat: entry.diff_stat,
+            })
+            .collect();
+        let rows = entries.into_iter().enumerate().map(|(index, entry)| {
+            let selected = entry.repo_path == self.repo_path;
+            let file_name = entry
+                .repo_path
+                .file_name()
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| entry.repo_path.as_unix_str().to_string());
+            let directory = entry
+                .repo_path
+                .parent()
+                .map(|parent| parent.as_unix_str().to_string())
+                .unwrap_or_default();
+            h_flex()
+                .id(("changed-file", index))
+                .px_2()
+                .py_0p5()
+                .gap_1p5()
+                .when(selected, |this| this.bg(colors.element_selected))
+                .hover(|this| this.bg(colors.element_hover))
+                .cursor_pointer()
+                .child(git_status_icon(entry.status))
+                .child(Label::new(file_name).size(LabelSize::Small))
+                .child(
+                    Label::new(directory)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .truncate(),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.switch_to(entry.clone(), window, cx)
+                }))
+        });
+        v_flex()
+            .id("changed-files")
+            .w(px(240.))
+            .flex_none()
+            .h_full()
+            .py_1()
+            .border_r_1()
+            .border_color(colors.border_variant)
+            .overflow_y_scroll()
+            .children(rows)
+    }
+}
+
 impl Render for SoloDiffView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.editor.clone()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .size_full()
+            .child(self.render_changed_files(cx))
+            .child(div().flex_1().min_w_0().h_full().child(self.editor.clone()))
     }
 }
 
@@ -724,6 +815,72 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use multi_buffer::MultiBufferRow;
+
+    #[gpui::test]
+    async fn test_changed_file_list_switches_file_in_place(cx: &mut TestAppContext) {
+        use git::status::StatusCode;
+        use project::FakeFs;
+        use serde_json::json;
+        use settings::SettingsStore;
+        use util::path;
+        use workspace::MultiWorkspace;
+
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/repo"),
+            json!({ ".git": {}, "a.txt": "new a", "b.txt": "new b" }),
+        )
+        .await;
+        fs.set_head_and_index_for_repo(
+            std::path::Path::new(path!("/repo/.git")),
+            &[("a.txt", "old a".into()), ("b.txt", "old b".into())],
+        );
+        fs.set_status_for_repo(
+            std::path::Path::new(path!("/repo/.git")),
+            &[
+                ("a.txt", StatusCode::Modified.worktree()),
+                ("b.txt", StatusCode::Modified.worktree()),
+            ],
+        );
+        let project = Project::test(fs, [path!("/repo").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        cx.run_until_parked();
+        let repository = project
+            .read_with(cx, |project, cx| project.active_repository(cx))
+            .expect("fake repository");
+        let entry = |path: &str| GitStatusEntry {
+            repo_path: RepoPath::new(path).unwrap(),
+            status: StatusCode::Modified.worktree(),
+            staging: StageStatus::Unstaged,
+            diff_stat: None,
+        };
+
+        let view = cx
+            .update(|window, cx| {
+                SoloDiffView::open_or_focus(entry("a.txt"), repository.clone(), workspace.downgrade(), window, cx)
+            })
+            .await
+            .unwrap();
+        view.update_in(cx, |view, window, cx| view.switch_to(entry("b.txt"), window, cx));
+        cx.run_until_parked();
+
+        workspace.read_with(cx, |workspace, cx| {
+            let open: Vec<String> = workspace
+                .items_of_type::<SoloDiffView>(cx)
+                .map(|view| view.read(cx).repo_path.as_unix_str().to_string())
+                .collect();
+            assert_eq!(open, ["b.txt"], "the tab now shows b.txt only");
+        });
+    }
 
     #[gpui::test]
     fn test_changes_only_multibuffer_has_one_buffer_and_expand_controls(cx: &mut TestAppContext) {
