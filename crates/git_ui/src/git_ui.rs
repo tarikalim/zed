@@ -50,6 +50,7 @@ mod git_runtime_diagnostics;
 mod changelists;
 mod conflicts_dialog;
 mod interactive_rebase;
+mod branch_actions;
 mod log_actions;
 mod merge_tool;
 pub mod pull_requests;

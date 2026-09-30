@@ -36,6 +36,8 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Diff viewer | Click a file: that file's diff only (side-by-side, revert arrow per chunk) with all changed files listed on the left; clicking one switches the same tab |
 | Staged / unstaged diff | File right-click → Staged Changes / Unstaged Changes; or Group By → Staged & Unstaged (JetBrains "Enable staging area") |
 | Branch widget | Title bar, top-left (`⎇ main ⌄`); ⌘⇧` also opens it. Tabs Branches · Stashes · Worktrees (⌘1/⌘2/⌘3) |
+| Branch actions | Branch widget → click a branch (or ↵): Checkout, New Branch from, Checkout and Rebase onto, Compare with, Show Diff with Working Tree, Rebase onto, Merge into, Update, Push, Rename, Delete; remote branches also Pull Using Merge/Rebase and Fetch. ⌘↵ checks out directly. Same menu on right-click in the Log's Branches pane |
+| Project tabs | Each project opens in its own window, grouped as tabs at the top (`"use_system_window_tabs": true` with `"default_open_behavior": "new_window"` in user settings) |
 | Switch worktree | Branch widget → Worktrees tab (⌘3): pick one to switch, type a name to create; also command palette "git: worktree" |
 | Stash / Unstash | Git panel `…` menu → Stash Changes… / Unstash Changes… |
 | Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
@@ -106,3 +108,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | PR panel | Pull Requests moved to a left-dock tool window (⌘8); details open as one tab per PR (panel test) |
 | 2026-09-30 | diff | Git panel click opens the single-file diff by default; changed-files list on the left of the diff tab (test caught and fixed a re-entrant read crash) |
 | 2026-09-30 | worktrees | Worktree switching was lost when the title bar worktree button was hidden; the branch widget popup now has a Worktrees tab (⌘3) with the full worktree picker (GitPicker test) |
+| 2026-09-30 | branches | Branch popup: clicking a branch opens the JetBrains branch actions menu (shared with the Log's Branches pane in `branch_actions.rs`), adds Update, Push, Fetch and Pull into current; project tabs via system window tabs; Threads sidebar no longer disabled (branch picker test) |

@@ -1,10 +1,9 @@
 use super::*;
-use crate::{branch_diff::BranchDiff, log_actions};
+use crate::branch_actions::{CompareHandler, RefKind, branch_actions_menu};
 use collections::HashSet;
 use git::repository::LogFilter;
-use gpui::{MouseDownEvent, PromptLevel};
-use std::str::FromStr as _;
-use ui::ContextMenuEntry;
+use gpui::MouseDownEvent;
+use std::{rc::Rc, str::FromStr as _};
 
 /// The JetBrains Log "Branches" pane: HEAD, Local, Remote and Tags, with folders by `/`.
 pub(super) struct BranchesPaneState {
@@ -25,14 +24,6 @@ impl Default for BranchesPaneState {
             tags_scan_id: None,
         }
     }
-}
-
-#[derive(Clone)]
-enum RefKind {
-    Head,
-    Local,
-    Remote,
-    Tag,
 }
 
 #[derive(Clone)]
@@ -278,235 +269,36 @@ impl GitGraph {
             .workspace
             .upgrade()
             .is_some_and(|workspace| workspace.read(cx).project().read(cx).is_local());
-        let current: Option<SharedString> = repository
-            .read(cx)
-            .branch
-            .as_ref()
-            .map(|branch| branch.name().to_string().into());
-        let current_label = current.clone().unwrap_or_else(|| "HEAD".into());
-        let workspace = self.workspace.clone();
-        let repository = repository.downgrade();
-        let name = row.name.clone();
-        let is_head = matches!(row.kind, RefKind::Head);
-        let is_current =
-            is_head || current.as_ref().is_some_and(|current| *current == row.name);
-        let sha = row.sha.as_ref().and_then(|sha| Oid::from_str(sha).ok());
-
-        let repository_for_menu = repository.clone();
-        let graph = cx.entity().downgrade();
-        let git = move |args: Vec<String>, error: &'static str| {
-            let repository = repository.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let Some(repository) = repository.upgrade() else {
-                    return;
-                };
-                let receiver =
-                    repository.update(cx, |repository, cx| repository.run_git_command(args.clone(), cx));
-                log_actions::spawn_git_job(receiver, error, window, cx);
-            }
-        };
-        let menu = ContextMenu::build(window, cx, move |menu, _, _| {
-            let menu = menu.header(name.clone());
-            match &row.kind {
-                RefKind::Head => menu
-                    .entry_when(sha.is_some(), "New Branch from 'HEAD'…", {
-                        let workspace = workspace.clone();
-                        let repository = repository_for_menu.clone();
-                        move |window, cx| {
-                            if let Some(sha) = sha {
-                                log_actions::open_new_branch_modal(
-                                    &workspace,
-                                    repository.clone(),
-                                    sha,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        }
-                    }),
-                RefKind::Local | RefKind::Remote | RefKind::Tag => {
-                    let is_remote = matches!(row.kind, RefKind::Remote);
-                    let is_tag = matches!(row.kind, RefKind::Tag);
-                    let checkout_args = if is_remote {
-                        vec!["switch".into(), "--track".into(), name.to_string()]
-                    } else if is_tag {
-                        vec!["checkout".into(), "--detach".into(), name.to_string()]
-                    } else {
-                        vec!["switch".into(), name.to_string()]
-                    };
-                    menu.when(!is_current, |menu| {
-                        menu.entry("Checkout", None, git(checkout_args, "Checkout failed"))
-                    })
-                    .entry_when(sha.is_some(), format!("New Branch from '{name}'…"), {
-                        let workspace = workspace.clone();
-                        let repository = repository_for_menu.clone();
-                        move |window, cx| {
-                            if let Some(sha) = sha {
-                                log_actions::open_new_branch_modal(
-                                    &workspace,
-                                    repository.clone(),
-                                    sha,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        }
-                    })
-                    .when(!is_current && !is_remote && !is_tag, |menu| {
-                        menu.entry(
-                            format!("Checkout and Rebase onto '{current_label}'"),
-                            None,
-                            git(
-                                vec!["rebase".into(), current_label.to_string(), name.to_string()],
-                                "Rebase failed",
-                            ),
-                        )
-                    })
-                    .separator()
-                    .when(!is_current, |menu| {
-                        let graph = graph.clone();
-                        let range: SharedString = format!("{current_label}...{name}").into();
-                        menu.entry(format!("Compare with '{current_label}'"), None, move |_, cx| {
-                            let range = range.clone();
-                            graph
-                                .update(cx, |graph, cx| {
-                                    graph.set_log_filter(
-                                        LogFilter {
-                                            branches: vec![range],
-                                            ..LogFilter::default()
-                                        },
-                                        cx,
-                                    )
-                                })
-                                .ok();
-                        })
-                    })
-                    .entry("Show Diff with Working Tree", None, {
-                        let workspace = workspace.clone();
-                        let repository = repository_for_menu.clone();
-                        let name = name.clone();
-                        move |window, cx| {
-                            let Some(repository) = repository.upgrade() else {
-                                return;
-                            };
-                            workspace
-                                .update(cx, |workspace, cx| {
-                                    let project = workspace.project().clone();
-                                    BranchDiff::deploy_branch_diff_with_base_ref(
-                                        workspace,
-                                        project,
-                                        repository,
-                                        name.clone(),
-                                        None,
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                        }
-                    })
-                    .when(!is_current, |menu| {
-                        menu.separator()
-                            .entry(
-                                format!("Rebase '{current_label}' onto '{name}'"),
-                                None,
-                                git(vec!["rebase".into(), name.to_string()], "Rebase failed"),
-                            )
-                            .entry(
-                                format!("Merge '{name}' into '{current_label}'"),
-                                None,
-                                git(
-                                    vec!["merge".into(), "--no-edit".into(), name.to_string()],
-                                    "Merge failed",
-                                ),
-                            )
-                    })
-                    .when(!is_remote && !is_tag, |menu| {
-                        menu.separator().entry("Rename…", None, {
-                            let workspace = workspace.clone();
-                            let repository = repository_for_menu.clone();
-                            let name = name.clone();
-                            move |window, cx| {
-                                let Some(repository) = repository.upgrade() else {
-                                    return;
-                                };
-                                let name = name.to_string();
-                                workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.toggle_modal(window, cx, |window, cx| {
-                                            crate::RenameBranchModal::new(
-                                                name, repository, window, cx,
-                                            )
-                                        })
-                                    })
-                                    .ok();
-                            }
-                        })
-                    })
-                    .when(!is_current, |menu| {
-                        let delete_args = if is_tag {
-                            vec!["tag".into(), "-d".into(), name.to_string()]
-                        } else if let Some((remote, branch)) =
-                            is_remote.then(|| name.split_once('/')).flatten()
-                        {
-                            vec![
-                                "push".into(),
-                                remote.to_string(),
-                                "--delete".into(),
-                                branch.to_string(),
-                            ]
-                        } else {
-                            vec!["branch".into(), "-d".into(), name.to_string()]
-                        };
-                        let run = git(delete_args, "Delete failed");
-                        let name = name.clone();
-                        menu.separator().entry("Delete", None, move |window, cx| {
-                            let detail = format!("Delete {}?", name);
-                            let answer = window.prompt(
-                                PromptLevel::Warning,
-                                &detail,
-                                None,
-                                &["Delete", "Cancel"],
-                                cx,
-                            );
-                            let run = run.clone();
-                            window
-                                .spawn(cx, async move |cx| {
-                                    if answer.await == Ok(0) {
-                                        cx.update(|window, cx| run(window, cx)).ok();
-                                    }
-                                })
-                                .detach();
-                        })
-                    })
-                }
-            }
-        });
         if !is_local_project {
             // ponytail: branch actions are local-only, like the log actions.
             return;
         }
+        let graph = cx.entity().downgrade();
+        let on_compare: CompareHandler = Rc::new(move |range, _, cx| {
+            graph
+                .update(cx, |graph, cx| {
+                    graph.set_log_filter(
+                        LogFilter {
+                            branches: vec![range],
+                            ..LogFilter::default()
+                        },
+                        cx,
+                    )
+                })
+                .ok();
+        });
+        let sha = row.sha.as_ref().and_then(|sha| Oid::from_str(sha).ok());
+        let menu = branch_actions_menu(
+            row.kind,
+            row.name,
+            sha,
+            self.workspace.clone(),
+            repository,
+            Some(on_compare),
+            window,
+            cx,
+        );
         self.set_context_menu(menu, position, None, window, cx);
-    }
-}
-
-trait EntryWhen {
-    fn entry_when(
-        self,
-        enabled: bool,
-        label: impl Into<SharedString>,
-        handler: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self;
-}
-
-impl EntryWhen for ContextMenu {
-    fn entry_when(
-        self,
-        enabled: bool,
-        label: impl Into<SharedString>,
-        handler: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.item(ContextMenuEntry::new(label).disabled(!enabled).handler(handler))
     }
 }
 

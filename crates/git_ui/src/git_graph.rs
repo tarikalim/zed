@@ -1237,6 +1237,30 @@ pub fn open_or_reuse_graph(
     }
 }
 
+/// Opens the Log filtered to a `current...other` range, like JetBrains "Compare with".
+pub(crate) fn open_log_compare(
+    workspace: &mut Workspace,
+    repository: &Entity<Repository>,
+    range: SharedString,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let repo_id = repository.read(cx).id;
+    let git_store = workspace.project().read(cx).git_store().clone();
+    open_or_reuse_graph(workspace, repo_id, git_store, LogSource::All, None, window, cx);
+    if let Some(graph) = workspace.active_item_as::<GitGraph>(cx) {
+        graph.update(cx, |graph, cx| {
+            graph.set_log_filter(
+                git::repository::LogFilter {
+                    branches: vec![range],
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+    }
+}
+
 fn lane_center_x(bounds: Bounds<Pixels>, lane: f32) -> Pixels {
     bounds.origin.x + LEFT_PADDING + lane * LANE_WIDTH + LANE_WIDTH / 2.0
 }

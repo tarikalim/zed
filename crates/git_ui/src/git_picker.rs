@@ -497,7 +497,7 @@ impl Render for GitPicker {
                     if this
                         .branch_list
                         .as_ref()
-                        .is_some_and(|branch_list| branch_list.read(cx).branch_filter_menu_open(cx))
+                        .is_some_and(|branch_list| branch_list.read(cx).has_open_menu(cx))
                     {
                         return;
                     }

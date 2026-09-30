@@ -4,19 +4,20 @@ use fuzzy_nucleo::StringMatchCandidate;
 
 use collections::{HashMap, HashSet};
 use git::repository::{Branch, delete_branch_flag};
-use git::{GitHostingProviderRegistry, parse_git_remote_url};
+use git::{GitHostingProviderRegistry, Oid, parse_git_remote_url};
 use gpui::http_client::Url;
 use gpui::{
     Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Global,
     InteractiveElement, IntoElement, Modifiers, ModifiersChangedEvent, ParentElement, PromptLevel,
-    Render, SharedString, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions, rems,
+    Render, SharedString, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions,
+    anchored, deferred, rems,
 };
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::git_store::{Repository, RepositoryEvent};
 use project::project_settings::ProjectSettings;
 use settings::Settings;
 
-use std::sync::Arc;
+use std::{rc::Rc, str::FromStr as _, sync::Arc};
 use time::OffsetDateTime;
 use ui::{
     Banner, ContextMenu, Divider, HighlightedLabel, Indicator, KeyBinding, ListItem,
@@ -27,6 +28,7 @@ use util::ResultExt;
 use workspace::notifications::DetachAndPromptErr;
 use workspace::{ModalView, Workspace};
 
+use crate::branch_actions::{CompareHandler, RefKind, branch_actions_menu};
 use crate::branch_picker;
 use git_ui_core::notifications::show_error_toast;
 
@@ -193,7 +195,7 @@ impl BranchList {
         let mut this = Self::new_inner(workspace, repository, style, width, false, window, cx);
         this._subscriptions
             .push(cx.subscribe(&this.picker, |this, _, _, cx| {
-                if !this.branch_filter_menu_open(cx) {
+                if !this.has_open_menu(cx) {
                     cx.emit(DismissEvent);
                 }
             }));
@@ -246,7 +248,7 @@ impl BranchList {
         );
         this._subscriptions
             .push(cx.subscribe(&this.picker, |this, _, _, cx| {
-                if !this.branch_filter_menu_open(cx) {
+                if !this.has_open_menu(cx) {
                     cx.emit(DismissEvent);
                 }
             }));
@@ -467,12 +469,10 @@ impl BranchList {
         });
     }
 
-    pub(crate) fn branch_filter_menu_open(&self, cx: &App) -> bool {
-        self.picker
-            .read(cx)
-            .delegate
-            .branch_filter_menu_handle
-            .is_deployed()
+    /// A deferred menu (filter or branch actions) is open, so outside clicks belong to it.
+    pub(crate) fn has_open_menu(&self, cx: &App) -> bool {
+        let delegate = &self.picker.read(cx).delegate;
+        delegate.branch_filter_menu_handle.is_deployed() || delegate.branch_menu.is_some()
     }
 
     pub(crate) fn cycle_branch_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -533,7 +533,7 @@ impl Render for BranchList {
                     cx.listener(move |this, _, window, cx| {
                         // The filter menu is a deferred popover, so clicks within it are outside
                         // the branch picker's bounds even though it is part of this interaction.
-                        if this.branch_filter_menu_open(cx) {
+                        if this.has_open_menu(cx) {
                             return;
                         }
                         this.picker.update(cx, |this, cx| {
@@ -676,6 +676,8 @@ pub struct BranchListDelegate {
     show_footer: bool,
     hovered_delete_index: Option<usize>,
     remote_provider_icons: HashMap<String, IconName>,
+    /// JetBrains branch actions submenu, beside the row at this match index.
+    branch_menu: Option<(usize, Entity<ContextMenu>, Subscription)>,
 }
 
 enum BranchSelectionBehavior {
@@ -1014,6 +1016,7 @@ impl BranchListDelegate {
             show_footer: false,
             hovered_delete_index: None,
             remote_provider_icons: HashMap::default(),
+            branch_menu: None,
         }
     }
 
@@ -1040,6 +1043,54 @@ impl BranchListDelegate {
                 cx,
             )
         }
+    }
+
+    fn deploy_branch_menu(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        let Some(branch) = self.matches.get(ix).and_then(Entry::as_branch) else {
+            return;
+        };
+        let Some(repository) = self.repo.clone() else {
+            return;
+        };
+        let kind = if branch.is_remote() {
+            RefKind::Remote
+        } else {
+            RefKind::Local
+        };
+        let sha = branch
+            .most_recent_commit
+            .as_ref()
+            .and_then(|commit| Oid::from_str(&commit.sha).ok());
+        let workspace = self.workspace.clone();
+        let on_compare: CompareHandler = {
+            let workspace = workspace.clone();
+            let repository = repository.clone();
+            Rc::new(move |range, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        crate::git_graph::open_log_compare(workspace, &repository, range, window, cx)
+                    })
+                    .ok();
+            })
+        };
+        let menu = branch_actions_menu(
+            kind,
+            branch.name().to_string().into(),
+            sha,
+            workspace,
+            repository,
+            Some(on_compare),
+            window,
+            cx,
+        );
+        menu.focus_handle(cx).focus(window, cx);
+        let subscription = cx.subscribe_in(&menu, window, |picker, _, _: &DismissEvent, window, cx| {
+            picker.delegate.branch_menu = None;
+            picker.focus_handle(cx).focus(window, cx);
+            cx.notify();
+        });
+        self.branch_menu = Some((ix, menu, subscription));
+        cx.notify();
     }
 
     fn is_force_delete_hovering_index(&self, index: usize) -> bool {
@@ -1377,6 +1428,7 @@ impl PickerDelegate for BranchListDelegate {
     fn has_another_open_menu(&self, window: &Window, cx: &App) -> bool {
         self.branch_filter_menu_handle.is_deployed()
             || self.branch_filter_menu_handle.is_focused(window, cx)
+            || self.branch_menu.is_some()
     }
 
     fn match_count(&self) -> usize {
@@ -1544,6 +1596,13 @@ impl PickerDelegate for BranchListDelegate {
                 {
                     on_select(branch.clone(), window, cx);
                     cx.emit(DismissEvent);
+                    return;
+                }
+
+                // JetBrains: a branch opens its actions menu; cmd-enter checks it out directly.
+                if !secondary {
+                    let ix = self.selected_index;
+                    self.deploy_branch_menu(ix, window, cx);
                     return;
                 }
 
@@ -1970,6 +2029,26 @@ impl PickerDelegate for BranchListDelegate {
                         .child(ListSubHeader::new(section_header).inset(true))
                 })
                 .child(list_item)
+                .when_some(
+                    self.branch_menu
+                        .as_ref()
+                        .filter(|(menu_ix, ..)| *menu_ix == ix)
+                        .map(|(_, menu, _)| menu.clone()),
+                    |this, menu| {
+                        // Zero-size anchor at the row's top-right, so the menu opens beside the popup.
+                        this.relative().child(
+                            div().absolute().top_0().right_0().child(
+                                deferred(
+                                    anchored()
+                                        .anchor(gpui::Anchor::TopLeft)
+                                        .snap_to_window_with_margin(px(8.))
+                                        .child(menu),
+                                )
+                                .with_priority(1),
+                            ),
+                        )
+                    },
+                )
                 .into_any_element(),
         )
     }
@@ -2504,6 +2583,74 @@ mod tests {
             })
             .await;
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_confirm_branch_opens_actions_menu(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_fs, project, repository) = init_fake_repository_with_fs(cx).await;
+        for branch in ["main", "develop"] {
+            repository
+                .update(cx, |repo, _| repo.create_branch(branch.to_string(), None))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        cx.run_until_parked();
+
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        let branch_list = workspace.update_in(cx, |workspace, window, cx| {
+            let weak_workspace = workspace.weak_handle();
+            let repository = Some(repository.clone());
+            workspace.toggle_modal(window, cx, move |window, cx| {
+                BranchList::new(
+                    weak_workspace,
+                    repository,
+                    BranchListStyle::Modal,
+                    rems(34.),
+                    window,
+                    cx,
+                )
+            });
+            workspace.active_modal::<BranchList>(cx).unwrap()
+        });
+        cx.run_until_parked();
+
+        let picker = branch_list.read_with(cx, |branch_list, _| branch_list.picker.clone());
+        let ix = picker.read_with(cx, |picker, _| {
+            picker
+                .delegate
+                .matches
+                .iter()
+                .position(|entry| entry.name() == "develop")
+                .expect("develop is listed")
+        });
+        picker.update_in(cx, |picker, window, cx| {
+            picker.delegate.selected_index = ix;
+            picker.delegate.confirm(false, window, cx);
+        });
+        cx.run_until_parked();
+        let menu = picker.read_with(cx, |picker, _| {
+            let (menu_ix, menu, _) = picker.delegate.branch_menu.as_ref().expect("menu is open");
+            assert_eq!(*menu_ix, ix);
+            menu.clone()
+        });
+        // The popup stays open and nothing was checked out.
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_modal::<BranchList>(cx).is_some())
+        });
+        cx.update(|window, cx| assert!(menu.focus_handle(cx).is_focused(window)));
+        assert!(branch_list.read_with(cx, |branch_list, cx| branch_list.has_open_menu(cx)));
+
+        menu.update(cx, |_, cx| cx.emit(DismissEvent));
+        cx.run_until_parked();
+        picker.read_with(cx, |picker, _| assert!(picker.delegate.branch_menu.is_none()));
+        cx.update(|window, cx| assert!(picker.focus_handle(cx).is_focused(window)));
     }
 
     #[gpui::test]
