@@ -40,7 +40,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
 | Conflicts / Merge Revisions | Opens after a conflicting merge/rebase/cherry-pick; "Resolve" on the Conflicts header |
 | Interactive rebase | Log right-click → Interactively Rebase from Here…; Continue/Abort bar in the git panel |
-| Pull Requests | Command palette "git: open pull requests" |
+| Pull Requests tool window | ⌘8 (left dock, list with search and state filter); clicking a PR opens "Pull Request #N" as an editor tab with the actions |
 | Search Everywhere (Shift Shift) | `crates/search_everywhere`: tabs All · Classes · Files · Symbols · Actions · Text; ⇥ / ⇧⇥ switch tabs, pressing the same shortcut again moves to the next tab |
 | Move a tool window (Move To) | Right-click the panel's icon in the status bar → Dock Left / Right / Bottom (no drag and drop) |
 
@@ -102,3 +102,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | after use | Title bar branch widget like JetBrains (`⎇ main ⌄`, worktree button hidden); untracked files under "Unversioned Files" in changelist mode (panel test); git panel can dock at the bottom; this user guide |
 | 2026-09-30 | theme | WebStorm "Islands iTerm" theme ported to Zed (`jetbrains/islands-iterm.json`), JetBrains Mono as editor font |
 | 2026-09-30 | search | Search Everywhere (`crates/search_everywhere`): All/Classes/Files/Symbols/Actions/Text tabs, JetBrains keymap bindings; GPUI test opens a file from the Files tab |
+| 2026-09-30 | PR panel | Pull Requests moved to a left-dock tool window (⌘8); details open as one tab per PR (panel test) |

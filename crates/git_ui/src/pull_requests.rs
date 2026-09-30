@@ -1,8 +1,8 @@
 use anyhow::Context as _;
 use editor::Editor;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, PromptLevel, Render, SharedString,
-    Task, WeakEntity, Window,
+    Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
+    PromptLevel, Render, SharedString, Task, WeakEntity, Window, px,
 };
 use markdown::{Markdown, MarkdownElement};
 use project::Project;
@@ -12,26 +12,152 @@ use ui::{ContextMenu, PopoverMenu, prelude::*};
 use util::ResultExt as _;
 use workspace::{
     Workspace,
+    dock::{DockPosition, Panel, PanelEvent},
     item::{Item, ItemEvent},
     notifications::DetachAndPromptErr,
 };
 
 pub(crate) fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &git::OpenPullRequests, window, cx| {
-        let existing = workspace.items_of_type::<PullRequestsView>(cx).next();
-        if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
-            return;
-        }
-        let Some(repository) = workspace.project().read(cx).active_repository(cx) else {
-            return;
-        };
-        let directory = repository.read(cx).work_directory_abs_path.to_path_buf();
-        let project = workspace.project().clone();
-        let workspace_handle = workspace.weak_handle();
-        let view = cx.new(|cx| PullRequestsView::new(directory, project, workspace_handle, window, cx));
-        workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
+        workspace.toggle_panel_focus::<PullRequestsPanel>(window, cx);
     });
+}
+
+/// Which half of the JetBrains Pull Requests UI a view shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The list in the Pull Requests tool window.
+    List,
+    /// One pull request, opened as an editor tab.
+    Details(u64),
+}
+
+/// The JetBrains "Pull Requests" tool window, docked on the left by default.
+pub struct PullRequestsPanel {
+    workspace: WeakEntity<Workspace>,
+    list: Option<(PathBuf, Entity<PullRequestsView>)>,
+    position: DockPosition,
+    focus_handle: FocusHandle,
+}
+
+impl PullRequestsPanel {
+    pub fn load(
+        workspace: WeakEntity<Workspace>,
+        cx: AsyncWindowContext,
+    ) -> Task<anyhow::Result<Entity<Self>>> {
+        cx.spawn(async move |cx| {
+            workspace.update_in(cx, |workspace_ref, _, cx| {
+                let git_store = workspace_ref.project().read(cx).git_store().clone();
+                cx.new(|cx| {
+                    cx.subscribe(&git_store, |_, _, event, cx| {
+                        if matches!(event, project::git_store::GitStoreEvent::ActiveRepositoryChanged(_)) {
+                            cx.notify();
+                        }
+                    })
+                    .detach();
+                    Self {
+                        workspace: workspace.clone(),
+                        list: None,
+                        position: DockPosition::Left,
+                        focus_handle: cx.focus_handle(),
+                    }
+                })
+            })
+        })
+    }
+
+    fn ensure_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<PullRequestsView>> {
+        let workspace = self.workspace.upgrade()?;
+        let project = workspace.read(cx).project().clone();
+        let repository = project.read(cx).active_repository(cx)?;
+        let directory = repository.read(cx).work_directory_abs_path.to_path_buf();
+        if let Some((current, list)) = &self.list
+            && *current == directory
+        {
+            return Some(list.clone());
+        }
+        let workspace = self.workspace.clone();
+        let list = cx.new(|cx| {
+            PullRequestsView::new(directory.clone(), project, workspace, Role::List, window, cx)
+        });
+        self.list = Some((directory, list.clone()));
+        Some(list)
+    }
+}
+
+impl EventEmitter<PanelEvent> for PullRequestsPanel {}
+
+impl Focusable for PullRequestsPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for PullRequestsPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = self.ensure_list(window, cx);
+        v_flex()
+            .key_context("PullRequestsPanel")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .bg(cx.theme().colors().panel_background)
+            .children(list)
+            .when(self.list.is_none(), |this| {
+                this.items_center()
+                    .justify_center()
+                    .child(Label::new("No Git repository").color(Color::Muted))
+            })
+    }
+}
+
+impl Panel for PullRequestsPanel {
+    fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.list
+            .as_ref()
+            .map(|(_, list)| list.read(cx).search.focus_handle(cx))
+            .unwrap_or_else(|| self.focus_handle.clone())
+    }
+
+    fn persistent_name() -> &'static str {
+        "PullRequestsPanel"
+    }
+
+    fn panel_key() -> &'static str {
+        "PullRequestsPanel"
+    }
+
+    fn position(&self, _: &Window, _: &App) -> DockPosition {
+        self.position
+    }
+
+    fn position_is_valid(&self, _: DockPosition) -> bool {
+        true
+    }
+
+    fn set_position(&mut self, position: DockPosition, _: &mut Window, cx: &mut Context<Self>) {
+        self.position = position;
+        cx.notify();
+    }
+
+    fn default_size(&self, _: &Window, _: &App) -> Pixels {
+        px(340.)
+    }
+
+    fn icon(&self, _: &Window, _: &App) -> Option<IconName> {
+        Some(IconName::PullRequest)
+    }
+
+    fn icon_tooltip(&self, _: &Window, _: &App) -> Option<&'static str> {
+        Some("Pull Requests")
+    }
+
+    fn toggle_action(&self) -> Box<dyn Action> {
+        git::OpenPullRequests.boxed_clone()
+    }
+
+    fn activation_priority(&self) -> u32 {
+        12
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -142,6 +268,7 @@ fn gh(directory: PathBuf, args: Vec<String>, cx: &App) -> Task<anyhow::Result<St
 }
 
 pub(crate) struct PullRequestsView {
+    role: Role,
     directory: PathBuf,
     project: Entity<Project>,
     workspace: WeakEntity<Workspace>,
@@ -163,6 +290,7 @@ impl PullRequestsView {
         directory: PathBuf,
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
+        role: Role,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -183,6 +311,7 @@ impl PullRequestsView {
             editor
         });
         let mut this = Self {
+            role,
             directory,
             project,
             workspace,
@@ -198,8 +327,34 @@ impl PullRequestsView {
             _list_task: None,
             _details_task: None,
         };
-        this.refresh(cx);
+        match role {
+            Role::List => this.refresh(cx),
+            Role::Details(number) => this.select(number, cx),
+        }
         this
+    }
+
+    /// Opens the pull request as an editor tab, reusing an open tab for it.
+    fn open_details(&mut self, number: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected = Some(number);
+        cx.notify();
+        let (directory, project) = (self.directory.clone(), self.project.clone());
+        self.workspace
+            .update(cx, |workspace, cx| {
+                let existing = workspace
+                    .items_of_type::<PullRequestsView>(cx)
+                    .find(|view| view.read(cx).role == Role::Details(number));
+                if let Some(existing) = existing {
+                    workspace.activate_item(&existing, true, true, window, cx);
+                    return;
+                }
+                let workspace_handle = workspace.weak_handle();
+                let view = cx.new(|cx| {
+                    PullRequestsView::new(directory, project, workspace_handle, Role::Details(number), window, cx)
+                });
+                workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
+            })
+            .log_err();
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -289,10 +444,7 @@ impl PullRequestsView {
         let task = gh(self.directory.clone(), args(number), cx);
         cx.spawn_in(window, async move |this, cx| {
             task.await?;
-            this.update(cx, |this, cx| {
-                this.refresh(cx);
-                this.select(number, cx);
-            })?;
+            this.update(cx, |this, cx| this.select(number, cx))?;
             anyhow::Ok(())
         })
         .detach_and_prompt_err(error, window, cx, |_, _, _| None);
@@ -399,7 +551,7 @@ impl PullRequestsView {
                 .when(selected, |this| this.bg(colors.element_selected))
                 .hover(|this| this.bg(colors.element_hover))
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.select(number, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| this.open_details(number, window, cx)))
                 .child(
                     h_flex()
                         .gap_1()
@@ -431,10 +583,7 @@ impl PullRequestsView {
         });
 
         v_flex()
-            .w(relative(0.4))
-            .h_full()
-            .border_r_1()
-            .border_color(colors.border)
+            .size_full()
             .child(
                 h_flex()
                     .p_1()
@@ -658,7 +807,10 @@ impl Item for PullRequestsView {
     type Event = ItemEvent;
 
     fn tab_content_text(&self, _: usize, _: &App) -> SharedString {
-        "Pull Requests".into()
+        match self.role {
+            Role::List => "Pull Requests".into(),
+            Role::Details(number) => format!("Pull Request #{number}").into(),
+        }
     }
 
     fn tab_icon(&self, _: &Window, _: &App) -> Option<Icon> {
@@ -672,13 +824,16 @@ impl Item for PullRequestsView {
 
 impl Render for PullRequestsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = match self.role {
+            Role::List => self.render_list(cx).into_any_element(),
+            Role::Details(_) => self.render_details(window, cx),
+        };
         h_flex()
             .key_context("PullRequests")
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().editor_background)
-            .child(self.render_list(cx))
-            .child(self.render_details(window, cx))
+            .child(content)
     }
 }
 
@@ -704,5 +859,58 @@ mod tests {
         assert_eq!(details.files[0].path, "Cargo.lock");
         assert_eq!(details.reviews[0].state, "APPROVED");
         assert_eq!(details.comments[0].body, "LGTM");
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use project::FakeFs;
+    use serde_json::json;
+    use settings::SettingsStore;
+    use util::path;
+    use workspace::MultiWorkspace;
+
+    #[gpui::test]
+    async fn test_panel_opens_one_details_tab_per_pull_request(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/repo"), json!({ ".git": {}, "a.txt": "a" })).await;
+        let project = Project::test(fs, [path!("/repo").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window.read_with(cx, |mw, _| mw.workspace().clone()).unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+
+        let panel = workspace
+            .update_in(cx, |_, window, cx| PullRequestsPanel::load(workspace.downgrade(), window.to_async(cx)))
+            .await
+            .unwrap();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.toggle_panel_focus::<PullRequestsPanel>(window, cx);
+        });
+        cx.run_until_parked();
+        let list = panel.read_with(cx, |panel, _| panel.list.clone().map(|(_, list)| list));
+        let list = list.expect("the panel creates the list on render");
+
+        for _ in 0..2 {
+            list.update_in(cx, |list, window, cx| list.open_details(7, window, cx));
+            cx.run_until_parked();
+        }
+        workspace.read_with(cx, |workspace, cx| {
+            let titles: Vec<SharedString> = workspace
+                .items_of_type::<PullRequestsView>(cx)
+                .map(|view| view.read(cx).tab_content_text(0, cx))
+                .collect();
+            assert_eq!(titles, ["Pull Request #7"]);
+        });
     }
 }

@@ -130,6 +130,7 @@
       "alt-cmd-k": "git::CommitAndPush",
       "cmd-t": "git::Pull", // JetBrains: Update Project
       "cmd-9": "git_tool_window::ToggleFocus",
+      "cmd-8": "git::OpenPullRequests",
       // JetBrains Search Everywhere and its tabs.
       "shift shift": ["search_everywhere::Toggle", { "tab": "all" }],
       "cmd-shift-o": ["search_everywhere::Toggle", { "tab": "files" }],
@@ -154,7 +155,7 @@
       "cmd-5": "debug_panel::ToggleFocus",
       "cmd-6": "diagnostics::Deploy",
       "cmd-7": "outline_panel::ToggleFocus",
-      "cmd-8": null, // Services (bottom dock)
+      "cmd-8": "git::OpenPullRequests", // Pull Requests tool window (JetBrains: unbound)
       "cmd-9": "git_tool_window::ToggleFocus", // JetBrains: Git tool window (Log)
       "cmd-0": "git_panel::ToggleFocus",
     },

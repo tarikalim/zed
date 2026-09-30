@@ -52,7 +52,7 @@ mod conflicts_dialog;
 mod interactive_rebase;
 mod log_actions;
 mod merge_tool;
-mod pull_requests;
+pub mod pull_requests;
 mod shelf;
 mod stash_dialogs;
 pub mod multi_diff_view;
