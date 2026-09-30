@@ -1045,7 +1045,12 @@ impl BranchListDelegate {
         }
     }
 
-    fn deploy_branch_menu(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+    fn deploy_branch_menu(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
         let Some(branch) = self.matches.get(ix).and_then(Entry::as_branch) else {
             return;
         };
@@ -1068,7 +1073,13 @@ impl BranchListDelegate {
             Rc::new(move |range, window, cx| {
                 workspace
                     .update(cx, |workspace, cx| {
-                        crate::git_graph::open_log_compare(workspace, &repository, range, window, cx)
+                        crate::git_graph::open_log_compare(
+                            workspace,
+                            &repository,
+                            range,
+                            window,
+                            cx,
+                        )
                     })
                     .ok();
             })
@@ -1084,11 +1095,12 @@ impl BranchListDelegate {
             cx,
         );
         menu.focus_handle(cx).focus(window, cx);
-        let subscription = cx.subscribe_in(&menu, window, |picker, _, _: &DismissEvent, window, cx| {
-            picker.delegate.branch_menu = None;
-            picker.focus_handle(cx).focus(window, cx);
-            cx.notify();
-        });
+        let subscription =
+            cx.subscribe_in(&menu, window, |picker, _, _: &DismissEvent, window, cx| {
+                picker.delegate.branch_menu = None;
+                picker.focus_handle(cx).focus(window, cx);
+                cx.notify();
+            });
         self.branch_menu = Some((ix, menu, subscription));
         cx.notify();
     }
@@ -1625,18 +1637,25 @@ impl PickerDelegate for BranchListDelegate {
                 };
 
                 let branch = branch.clone();
-                cx.spawn(async move |_, cx| {
-                    repo.update(cx, |repo, _| repo.change_branch(branch.name().to_string()))
-                        .await??;
-
-                    anyhow::Ok(())
+                cx.spawn_in(window, async move |_, cx| {
+                    let result = repo
+                        .update(cx, |repo, _| repo.change_branch(branch.name().to_string()))
+                        .await
+                        .map_err(anyhow::Error::from)
+                        .and_then(|result| result);
+                    if let Err(error) = result {
+                        cx.update(|window, cx| {
+                            crate::log_actions::show_git_error(
+                                error,
+                                "Failed to change branch",
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                    }
                 })
-                .detach_and_prompt_err(
-                    "Failed to change branch",
-                    window,
-                    cx,
-                    |_, _, _| None,
-                );
+                .detach();
             }
             Entry::NewUrl { url } => {
                 self.state = PickerState::CreateRemote(url.clone().into());
@@ -2649,7 +2668,9 @@ mod tests {
 
         menu.update(cx, |_, cx| cx.emit(DismissEvent));
         cx.run_until_parked();
-        picker.read_with(cx, |picker, _| assert!(picker.delegate.branch_menu.is_none()));
+        picker.read_with(cx, |picker, _| {
+            assert!(picker.delegate.branch_menu.is_none())
+        });
         cx.update(|window, cx| assert!(picker.focus_handle(cx).is_focused(window)));
     }
 

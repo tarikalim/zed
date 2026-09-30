@@ -326,39 +326,64 @@ pub(crate) fn spawn_git_job<T: 'static>(
             let Err(error) = receiver.await.map_err(anyhow::Error::from).and_then(|r| r) else {
                 return;
             };
-            // Like JetBrains, a merge, rebase or cherry-pick that stops on conflicts opens the Conflicts dialog.
-            let message = format!("{error:#}");
-            cx.update(|window, cx| {
-                if ["CONFLICT", "could not apply", "could not revert"]
-                    .iter()
-                    .any(|marker| message.contains(marker))
-                {
-                    // Keep git's message visible; the dialog opens on request, once the status scan caught up.
-                    let answer = window.prompt(
-                        gpui::PromptLevel::Warning,
-                        "Conflicts",
-                        Some(&message),
-                        &["Resolve…", "Close"],
-                        cx,
-                    );
-                    window
-                        .spawn(cx, async move |cx| {
-                            if answer.await == Ok(0) {
-                                cx.update(|window, cx| {
-                                    window.dispatch_action(Box::new(git::ResolveConflicts), cx)
-                                })
-                                .ok();
-                            }
-                        })
-                        .detach();
-                } else {
-                    let task: Task<anyhow::Result<()>> = Task::ready(Err(error));
-                    task.detach_and_prompt_err(&error_title, window, cx, |_, _, _| None);
-                }
-            })
-            .ok();
+            cx.update(|window, cx| show_git_error(error, &error_title, window, cx))
+                .ok();
         })
         .detach();
+}
+
+/// Shows a failed git command, with a follow-up action where JetBrains offers one.
+pub(crate) fn show_git_error(
+    error: anyhow::Error,
+    error_title: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let message = format!("{error:#}");
+    // Like JetBrains, a merge, rebase or cherry-pick that stops on conflicts opens the Conflicts dialog.
+    let follow_up: Option<(&str, &str, Box<dyn Action>)> =
+        if ["CONFLICT", "could not apply", "could not revert"]
+            .iter()
+            .any(|marker| message.contains(marker))
+        {
+            Some(("Conflicts", "Resolve…", Box::new(git::ResolveConflicts)))
+        } else if let Some(path) = worktree_using_branch(&message) {
+            Some((
+                "Branch Is Checked Out in Another Worktree",
+                "Open in New Tab",
+                Box::new(zed_actions::OpenWorktreeInNewWindow { path }),
+            ))
+        } else {
+            None
+        };
+    let Some((title, button, action)) = follow_up else {
+        let task: Task<anyhow::Result<()>> = Task::ready(Err(error));
+        task.detach_and_prompt_err(error_title, window, cx, |_, _, _| None);
+        return;
+    };
+    // Keep git's message visible; the follow-up runs only on request.
+    let answer = window.prompt(
+        gpui::PromptLevel::Warning,
+        title,
+        Some(&message),
+        &[button, "Close"],
+        cx,
+    );
+    window
+        .spawn(cx, async move |cx| {
+            if answer.await == Ok(0) {
+                cx.update(|window, cx| window.dispatch_action(action, cx))
+                    .ok();
+            }
+        })
+        .detach();
+}
+
+/// The worktree path from git's "'<branch>' is already used by worktree at '<path>'".
+fn worktree_using_branch(message: &str) -> Option<std::path::PathBuf> {
+    let (_, rest) = message.split_once("is already used by worktree at '")?;
+    let (path, _) = rest.split_once('\'')?;
+    Some(path.into())
 }
 
 fn run_commit_operation(
@@ -712,5 +737,20 @@ impl Render for NewRefModal {
                 )
             })
             .child(dialog_buttons(confirm_label, cx))
+    }
+}
+
+#[cfg(test)]
+mod worktree_error_tests {
+    use super::worktree_using_branch;
+
+    #[test]
+    fn test_worktree_using_branch() {
+        let message = "git switch failed:\nfatal: 'feat/105685-sandbox-migrate-on-resume' is already used by worktree at '/Users/me/newmind/nmaistro-backend-105685'";
+        assert_eq!(
+            worktree_using_branch(message),
+            Some("/Users/me/newmind/nmaistro-backend-105685".into())
+        );
+        assert_eq!(worktree_using_branch("fatal: invalid reference: nope"), None);
     }
 }
