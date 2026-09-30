@@ -1,4 +1,4 @@
-# JetBrains Git UI for Zed — plan
+# JetBrains Git UI for Zed
 
 Fork: `tarikalim/zed`, branch `jetbrains-git`. Goal: WebStorm/GoLand Git tool window behaviour in Zed, one feature per step.
 
@@ -14,6 +14,45 @@ Zed extensions (WASM) cannot draw UI: the API only covers languages, themes, ico
 ## What Zed already has (no work)
 
 Commit graph with search and details pane · git panel with per-file checkboxes, hunk/line staging, amend, tree view · side-by-side/unified diff (`ToggleSplitDiff`) · inline Ours/Theirs/Both conflict buttons · stash list/apply/pop/drop/view · worktrees · branch popup in the title bar · blame · file history.
+
+## Install and update
+
+- Build and install: `script/jetbrains-git-install` builds a release binary (no Xcode needed, `gpui_platform/runtime_shaders`), installs `~/Applications/Zed JetBrains.app` next to the stock Zed and links the CLI `~/.local/bin/zed-jb`. Open a project with `zed-jb <path>`.
+- Update to the latest upstream Zed: `script/jetbrains-git-sync` (rebases `jetbrains-git` onto `upstream/main`, pushes with `--force-with-lease`), then `script/jetbrains-git-install`.
+- Settings are shared with the stock Zed (`~/.config/zed/settings.json`); use `"base_keymap": "JetBrains"`.
+- Only `gh` needs an account (Pull Requests view): `gh auth login`.
+
+## Where things are
+
+| JetBrains | In this fork |
+|---|---|
+| Git tool window → Log | ⌘9 (bottom dock "Git" panel), or command palette "git graph: open" as a tab |
+| Log filters Branch / User / Date / Paths | Next to the Log search field |
+| Branches tree | Left of the Log; branch icon button toggles it |
+| Log context menu (cherry-pick, reset, rebase…) | Right-click a commit |
+| Commit tool window | ⌘K (focuses the commit message) or ⌘0; changelists, "Unversioned Files", checkboxes |
+| Commit and Push / message history | Commit split button menu, ⌥⌘K / ⌃M in the message box |
+| Diff viewer | Click a file; side-by-side with a revert arrow per chunk |
+| Staged / unstaged diff | File right-click → Staged Changes / Unstaged Changes; or Group By → Staged & Unstaged (JetBrains "Enable staging area") |
+| Branch widget | Title bar, top-left (`⎇ main ⌄`); ⌘⇧` also opens it |
+| Stash / Unstash | Git panel `…` menu → Stash Changes… / Unstash Changes… |
+| Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
+| Conflicts / Merge Revisions | Opens after a conflicting merge/rebase/cherry-pick; "Resolve" on the Conflicts header |
+| Interactive rebase | Log right-click → Interactively Rebase from Here…; Continue/Abort bar in the git panel |
+| Pull Requests | Command palette "git: open pull requests" |
+| Move a tool window (Move To) | Right-click the panel's icon in the status bar → Dock Left / Right / Bottom (no drag and drop) |
+
+## Keymap (JetBrains base keymap, macOS)
+
+⌘K commit window · ⌥⌘K commit and push · ⇧⌘K push · ⌘T update project (pull) · ⌘9 Git Log · ⌘0 git panel · ⌃M commit message history · ⌘D diff in the Log. General: ⇧⌘F find in files · ⇧⌘R replace in files · ⇧⌘O / ⌘E go to file · ⌘O go to symbol · Shift Shift command palette.
+
+## Known differences from JetBrains
+
+- User, date and path Log filters show a linear list without graph lines (git does not rewrite parents for them).
+- Merge tool: per-chunk controls are in the Result pane, not as arrows in the side panes.
+- Pull Requests is a tab, without per-file inline review comments; no Console tab in the Git tool window.
+- Tool windows move by right-click, not drag and drop; Project/Outline panels only dock left or right.
+- New write actions are local-only (disabled in remote/SSH projects).
 
 ## Steps
 
@@ -58,3 +97,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | 13 | Git tool window; render test; app launch smoke test clean; 171/171 git_ui tests |
 | 2026-09-30 | review | Independent review, 13 findings fixed: rebase editors via GIT_SEQUENCE_EDITOR/GIT_EDITOR env (beat user env), `rebase.missingCommitsCheck=error` + HEAD-moved guard, shelf includes untracked files (intent-to-add), pinned diff format, collision-free shelf dirs, Push up to Here ancestor guard, accept side on modify/delete (`git rm`), merge tool swaps panes during rebase and refuses non-UTF-8, conflict ranges no longer grow, root path filter → `.`, exact author match, conflict prompt keeps git's message, changelist counts match other sections, rebase flag cached, Git tool window follows the active repository. Added `script/jetbrains-git-install` and `script/jetbrains-git-sync` |
 | 2026-09-30 | polish | Installed `~/Applications/Zed JetBrains.app` (release) + `zed-jb` CLI; unshelve unstaged; Compare with current branch; merge tool synced scrolling; clippy clean; 172/172 git_ui tests |
+| 2026-09-30 | after use | Title bar branch widget like JetBrains (`⎇ main ⌄`, worktree button hidden); untracked files under "Unversioned Files" in changelist mode (panel test); git panel can dock at the bottom; this user guide |
