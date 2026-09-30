@@ -1052,15 +1052,20 @@ impl TitleBar {
                                 .color(Color::Muted),
                         )
                 } else {
+                    // JetBrains New UI branch widget: "⎇ main ⌄" in regular text color.
                     Button::new("project_branch_trigger", branch_name)
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .label_size(LabelSize::Small)
-                        .color(Color::Muted)
                         .tab_index(0isize)
                         .start_icon(
                             Icon::new(branch_icon)
                                 .size(IconSize::XSmall)
                                 .color(branch_icon_color),
+                        )
+                        .end_icon(
+                            Icon::new(IconName::ChevronDown)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
                         )
                 };
 
