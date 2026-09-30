@@ -1634,6 +1634,7 @@
     "bindings": {
       "alt-1": "git_picker::ActivateBranchesTab",
       "alt-2": "git_picker::ActivateStashTab",
+      "alt-3": "git_picker::ActivateWorktreesTab",
     },
   },
   {

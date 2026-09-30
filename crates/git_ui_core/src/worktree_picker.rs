@@ -42,6 +42,8 @@ actions!(
 pub struct WorktreePicker {
     picker: Entity<Picker<WorktreePickerDelegate>>,
     focus_handle: FocusHandle,
+    // Hosted inside another popover (the Git picker's Worktrees tab), which owns chrome and dismissal.
+    embedded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -56,6 +58,18 @@ impl WorktreePicker {
             .upgrade()
             .and_then(|workspace| workspace.read(cx).focused_dock_position(window, cx));
         Self::new_inner(project, workspace, focused_dock, false, window, cx)
+    }
+
+    pub fn new_embedded(
+        project: Entity<Project>,
+        workspace: WeakEntity<Workspace>,
+        show_footer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new_inner(project, workspace, None, show_footer, window, cx);
+        this.embedded = true;
+        this
     }
 
     pub fn new_modal(
@@ -216,6 +230,7 @@ impl WorktreePicker {
         Self {
             focus_handle: picker.focus_handle(cx),
             picker,
+            embedded: false,
             _subscriptions: subscriptions,
         }
     }
@@ -246,12 +261,13 @@ impl Render for WorktreePicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("WorktreePicker")
-            .elevation_3(cx)
+            .when(!self.embedded, |el| {
+                el.elevation_3(cx).on_mouse_down_out(cx.listener(|_, _, _, cx| {
+                    cx.emit(DismissEvent);
+                }))
+            })
             .child(self.picker.clone())
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
-            .on_mouse_down_out(cx.listener(|_, _, _, cx| {
-                cx.emit(DismissEvent);
-            }))
             .on_action(cx.listener(|_, _: &OpenWorktreeSetupTasks, _, cx| {
                 cx.emit(DismissEvent);
                 cx.propagate();

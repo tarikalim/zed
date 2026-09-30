@@ -35,7 +35,8 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Commit and Push / message history | Commit split button menu, ⌥⌘K / ⌃M in the message box |
 | Diff viewer | Click a file: that file's diff only (side-by-side, revert arrow per chunk) with all changed files listed on the left; clicking one switches the same tab |
 | Staged / unstaged diff | File right-click → Staged Changes / Unstaged Changes; or Group By → Staged & Unstaged (JetBrains "Enable staging area") |
-| Branch widget | Title bar, top-left (`⎇ main ⌄`); ⌘⇧` also opens it |
+| Branch widget | Title bar, top-left (`⎇ main ⌄`); ⌘⇧` also opens it. Tabs Branches · Stashes · Worktrees (⌘1/⌘2/⌘3) |
+| Switch worktree | Branch widget → Worktrees tab (⌘3): pick one to switch, type a name to create; also command palette "git: worktree" |
 | Stash / Unstash | Git panel `…` menu → Stash Changes… / Unstash Changes… |
 | Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
 | Conflicts / Merge Revisions | Opens after a conflicting merge/rebase/cherry-pick; "Resolve" on the Conflicts header |
@@ -104,3 +105,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | search | Search Everywhere (`crates/search_everywhere`): All/Classes/Files/Symbols/Actions/Text tabs, JetBrains keymap bindings; GPUI test opens a file from the Files tab |
 | 2026-09-30 | PR panel | Pull Requests moved to a left-dock tool window (⌘8); details open as one tab per PR (panel test) |
 | 2026-09-30 | diff | Git panel click opens the single-file diff by default; changed-files list on the left of the diff tab (test caught and fixed a re-entrant read crash) |
+| 2026-09-30 | worktrees | Worktree switching was lost when the title bar worktree button was hidden; the branch widget popup now has a Worktrees tab (⌘3) with the full worktree picker (GitPicker test) |

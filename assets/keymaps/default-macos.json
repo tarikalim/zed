@@ -1686,6 +1686,7 @@
     "bindings": {
       "cmd-1": "git_picker::ActivateBranchesTab",
       "cmd-2": "git_picker::ActivateStashTab",
+      "cmd-3": "git_picker::ActivateWorktreesTab",
     },
   },
   {
