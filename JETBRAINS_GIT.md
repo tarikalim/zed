@@ -21,6 +21,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 - Update to the latest upstream Zed: `script/jetbrains-git-sync` (rebases `jetbrains-git` onto `upstream/main`, pushes with `--force-with-lease`), then `script/jetbrains-git-install`.
 - Settings are shared with the stock Zed (`~/.config/zed/settings.json`); use `"base_keymap": "JetBrains"`.
 - Only `gh` needs an account (Pull Requests view): `gh auth login`.
+- Theme: `jetbrains/islands-iterm.json` is the WebStorm "Islands iTerm" theme (editor colors from the WebStorm scheme, terminal from the iTerm2 dark profile). Install with `cp jetbrains/islands-iterm.json ~/.config/zed/themes/` and set `"theme": { "dark": "Islands iTerm" }`; editor font `"buffer_font_family": "JetBrains Mono"`.
 
 ## Where things are
 
@@ -98,3 +99,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | review | Independent review, 13 findings fixed: rebase editors via GIT_SEQUENCE_EDITOR/GIT_EDITOR env (beat user env), `rebase.missingCommitsCheck=error` + HEAD-moved guard, shelf includes untracked files (intent-to-add), pinned diff format, collision-free shelf dirs, Push up to Here ancestor guard, accept side on modify/delete (`git rm`), merge tool swaps panes during rebase and refuses non-UTF-8, conflict ranges no longer grow, root path filter → `.`, exact author match, conflict prompt keeps git's message, changelist counts match other sections, rebase flag cached, Git tool window follows the active repository. Added `script/jetbrains-git-install` and `script/jetbrains-git-sync` |
 | 2026-09-30 | polish | Installed `~/Applications/Zed JetBrains.app` (release) + `zed-jb` CLI; unshelve unstaged; Compare with current branch; merge tool synced scrolling; clippy clean; 172/172 git_ui tests |
 | 2026-09-30 | after use | Title bar branch widget like JetBrains (`⎇ main ⌄`, worktree button hidden); untracked files under "Unversioned Files" in changelist mode (panel test); git panel can dock at the bottom; this user guide |
+| 2026-09-30 | theme | WebStorm "Islands iTerm" theme ported to Zed (`jetbrains/islands-iterm.json`), JetBrains Mono as editor font |
