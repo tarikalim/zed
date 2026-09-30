@@ -1,33 +1,54 @@
 #!/usr/bin/env bash
-# Builds this fork (no Xcode needed) and installs it as ~/Applications/Zed JetBrains.app.
+# Builds this fork (no Xcode needed) and installs it as /Applications/Zed.app.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 nice -n 10 cargo build --release -p zed --features gpui_platform/runtime_shaders
 
-app="$HOME/Applications/Zed JetBrains.app"
+# Installed as Zed itself (same name and bundle id), so tools that track apps by bundle id see Zed.
+# The dev release channel keeps auto-update off, so official updates never overwrite the fork.
+app="/Applications/Zed.app"
+marker="ZedJetBrainsFork"
+if [ -d "$app" ] && ! /usr/libexec/PlistBuddy -c "Print $marker" "$app/Contents/Info.plist" >/dev/null 2>&1; then
+  trashed="$HOME/.Trash/Zed (official) $(date +%Y%m%d-%H%M%S).app"
+  mv "$app" "$trashed"
+  echo "Moved the official Zed to the Trash: $trashed"
+fi
+rm -rf "$HOME/Applications/Zed JetBrains.app"
+
+icns="target/Zed.icns"
+if [ ! -f "$icns" ]; then
+  iconset="target/Zed.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    sips -z $size $size crates/zed/resources/app-icon@2x.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z $((size * 2)) $((size * 2)) crates/zed/resources/app-icon@2x.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$iconset" -o "$icns"
+fi
+
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/zed "$app/Contents/MacOS/zed"
-if [ -f /Applications/Zed.app/Contents/Resources/Zed.icns ]; then
-  cp /Applications/Zed.app/Contents/Resources/Zed.icns "$app/Contents/Resources/Zed.icns"
-fi
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cp "$icns" "$app/Contents/Resources/Zed.icns"
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Zed JetBrains</string>
-  <key>CFBundleDisplayName</key><string>Zed JetBrains</string>
-  <key>CFBundleIdentifier</key><string>dev.zed.Zed-JetBrains</string>
+  <key>CFBundleName</key><string>Zed</string>
+  <key>CFBundleDisplayName</key><string>Zed</string>
+  <key>CFBundleIdentifier</key><string>dev.zed.Zed</string>
   <key>CFBundleExecutable</key><string>zed</string>
   <key>CFBundleIconFile</key><string>Zed</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>10.15.7</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>$marker</key><true/>
 </dict>
 </plist>
 PLIST
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
 
 mkdir -p "$HOME/.local/bin"
 ln -sf "$app/Contents/MacOS/zed" "$HOME/.local/bin/zed-jb"

@@ -17,7 +17,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 
 ## Install and update
 
-- Build and install: `script/jetbrains-git-install` builds a release binary (no Xcode needed, `gpui_platform/runtime_shaders`), installs `~/Applications/Zed JetBrains.app` next to the stock Zed and links the CLI `~/.local/bin/zed-jb`. Open a project with `zed-jb <path>`.
+- Build and install: `script/jetbrains-git-install` builds a release binary (no Xcode needed, `gpui_platform/runtime_shaders`), installs it as `/Applications/Zed.app` with the stock name and bundle id (`dev.zed.Zed`, so app trackers see Zed), moves a stock Zed found there to the Trash, and links the CLI `~/.local/bin/zed-jb`. The dev release channel keeps auto-update off, so official updates never replace the fork; its data lives under the `0-dev` database. Open a project with `zed-jb <path>`.
 - Update to the latest upstream Zed: `script/jetbrains-git-sync` (rebases `jetbrains-git` onto `upstream/main`, pushes with `--force-with-lease`), then `script/jetbrains-git-install`.
 - Settings are shared with the stock Zed (`~/.config/zed/settings.json`); use `"base_keymap": "JetBrains"`.
 - Only `gh` needs an account (Pull Requests view): `gh auth login`.
@@ -110,3 +110,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | worktrees | Worktree switching was lost when the title bar worktree button was hidden; the branch widget popup now has a Worktrees tab (⌘3) with the full worktree picker (GitPicker test) |
 | 2026-09-30 | branches | Branch popup: clicking a branch opens the JetBrains branch actions menu (shared with the Log's Branches pane in `branch_actions.rs`), adds Update, Push, Fetch and Pull into current; project tabs via system window tabs; Threads sidebar no longer disabled (branch picker test) |
 | 2026-09-30 | worktrees | Checkout of a branch used by another worktree offers "Open in New Tab" (opens that worktree as a window tab); parser test |
+| 2026-10-01 | install | Installed as `/Applications/Zed.app` (name and bundle id of the stock Zed) instead of `Zed JetBrains.app`; icon generated from `app-icon@2x.png` |
