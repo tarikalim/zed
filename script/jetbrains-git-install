@@ -3,7 +3,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-cargo build --release -p zed --features gpui_platform/runtime_shaders
+nice -n 10 cargo build --release -p zed --features gpui_platform/runtime_shaders
 
 app="$HOME/Applications/Zed JetBrains.app"
 rm -rf "$app"
