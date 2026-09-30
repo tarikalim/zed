@@ -41,11 +41,12 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Conflicts / Merge Revisions | Opens after a conflicting merge/rebase/cherry-pick; "Resolve" on the Conflicts header |
 | Interactive rebase | Log right-click → Interactively Rebase from Here…; Continue/Abort bar in the git panel |
 | Pull Requests | Command palette "git: open pull requests" |
+| Search Everywhere (Shift Shift) | `crates/search_everywhere`: tabs All · Classes · Files · Symbols · Actions · Text; ⇥ / ⇧⇥ switch tabs, pressing the same shortcut again moves to the next tab |
 | Move a tool window (Move To) | Right-click the panel's icon in the status bar → Dock Left / Right / Bottom (no drag and drop) |
 
 ## Keymap (JetBrains base keymap, macOS)
 
-⌘K commit window · ⌥⌘K commit and push · ⇧⌘K push · ⌘T update project (pull) · ⌘9 Git Log · ⌘0 git panel · ⌃M commit message history · ⌘D diff in the Log. General: ⇧⌘F find in files · ⇧⌘R replace in files · ⇧⌘O / ⌘E go to file · ⌘O go to symbol · Shift Shift command palette.
+⌘K commit window · ⌥⌘K commit and push · ⇧⌘K push · ⌘T update project (pull) · ⌘9 Git Log · ⌘0 git panel · ⌃M commit message history · ⌘D diff in the Log. Search Everywhere: Shift Shift All · ⌘O Classes · ⇧⌘O Files · ⌥⌘O Symbols · ⇧⌘A Actions. General: ⇧⌘F find in files · ⇧⌘R replace in files · ⌘E file finder.
 
 ## Known differences from JetBrains
 
@@ -100,3 +101,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | polish | Installed `~/Applications/Zed JetBrains.app` (release) + `zed-jb` CLI; unshelve unstaged; Compare with current branch; merge tool synced scrolling; clippy clean; 172/172 git_ui tests |
 | 2026-09-30 | after use | Title bar branch widget like JetBrains (`⎇ main ⌄`, worktree button hidden); untracked files under "Unversioned Files" in changelist mode (panel test); git panel can dock at the bottom; this user guide |
 | 2026-09-30 | theme | WebStorm "Islands iTerm" theme ported to Zed (`jetbrains/islands-iterm.json`), JetBrains Mono as editor font |
+| 2026-09-30 | search | Search Everywhere (`crates/search_everywhere`): All/Classes/Files/Symbols/Actions/Text tabs, JetBrains keymap bindings; GPUI test opens a file from the Files tab |
