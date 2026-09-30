@@ -890,7 +890,7 @@ impl From<WorkspaceId> for i64 {
 fn prompt_and_open_paths(
     app_state: Arc<AppState>,
     options: PathPromptOptions,
-    create_new_window: bool,
+    create_new_window: Option<bool>,
     cx: &mut App,
 ) {
     if let Some(workspace_window) =
@@ -945,11 +945,34 @@ fn prompt_and_open_paths(
     }
 }
 
+/// `default_open_behavior` as an open mode; `"ask"` prompts This Window / New Tab, `None` on Cancel.
+pub fn resolve_default_open_mode(window: &mut Window, cx: &mut App) -> Task<Option<OpenMode>> {
+    match WorkspaceSettings::get_global(cx).default_open_behavior {
+        DefaultOpenBehavior::ExistingWindow => Task::ready(Some(OpenMode::Activate)),
+        DefaultOpenBehavior::NewWindow => Task::ready(Some(OpenMode::NewWindow)),
+        DefaultOpenBehavior::Ask => {
+            let answer = window.prompt(
+                PromptLevel::Info,
+                "Open Project",
+                Some("Open the project in this window or in a new tab?"),
+                &["This Window", "New Tab", "Cancel"],
+                cx,
+            );
+            cx.spawn(async move |_| match answer.await {
+                Ok(0) => Some(OpenMode::Activate),
+                Ok(1) => Some(OpenMode::NewWindow),
+                _ => None,
+            })
+        }
+    }
+}
+
+/// `create_new_window: None` follows `default_open_behavior`, asking after the paths are picked for `"ask"`.
 pub fn prompt_for_open_path_and_open(
     workspace: &mut Workspace,
     app_state: Arc<AppState>,
     options: PathPromptOptions,
-    create_new_window: bool,
+    create_new_window: Option<bool>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -964,7 +987,19 @@ pub fn prompt_for_open_path_and_open(
         let Some(paths) = paths.await.log_err().flatten() else {
             return;
         };
-        if !create_new_window {
+        let open_mode = match create_new_window {
+            Some(true) => Some(OpenMode::NewWindow),
+            Some(false) => Some(OpenMode::Activate),
+            None => match this.update_in(cx, |_, window, cx| resolve_default_open_mode(window, cx))
+            {
+                Ok(task) => task.await,
+                Err(_) => return,
+            },
+        };
+        let Some(open_mode) = open_mode else {
+            return;
+        };
+        if open_mode != OpenMode::NewWindow {
             if let Some(handle) = multi_workspace_handle {
                 if let Some(task) = handle
                     .update(cx, |multi_workspace, window, cx| {
@@ -1009,12 +1044,7 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
                     multiple: true,
                     prompt: None,
                 },
-                action.create_new_window.unwrap_or_else(|| {
-                    matches!(
-                        WorkspaceSettings::get_global(cx).default_open_behavior,
-                        DefaultOpenBehavior::NewWindow
-                    )
-                }),
+                action.create_new_window,
                 cx,
             );
         })
@@ -1029,7 +1059,7 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
                     multiple: true,
                     prompt: None,
                 },
-                true,
+                Some(true),
                 cx,
             );
         });
@@ -19268,6 +19298,29 @@ mod tests {
             cx.set_global(db::AppDatabase::test_new());
             theme_settings::init(theme::LoadThemes::JustBase, cx);
         });
+    }
+
+    #[gpui::test]
+    async fn test_resolve_default_open_mode_asks(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |settings, cx| {
+                settings.update_user_settings(cx, |settings| {
+                    settings.workspace.default_open_behavior = Some(DefaultOpenBehavior::Ask);
+                })
+            });
+        });
+        let cx = cx.add_empty_window();
+        for (answer, expected) in [
+            ("This Window", Some(OpenMode::Activate)),
+            ("New Tab", Some(OpenMode::NewWindow)),
+            ("Cancel", None),
+        ] {
+            let task = cx.update(|window, cx| resolve_default_open_mode(window, cx));
+            cx.run_until_parked();
+            cx.simulate_prompt_answer(answer);
+            assert_eq!(task.await, expected, "answer {answer}");
+        }
     }
 
     #[gpui::test]

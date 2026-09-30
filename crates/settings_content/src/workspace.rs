@@ -501,6 +501,9 @@ pub enum DefaultOpenBehavior {
     /// Open projects in a new window.
     #[strum(serialize = "Open a New Window")]
     NewWindow,
+    /// Ask each time: this window or a new window (a tab with system window tabs), like JetBrains.
+    #[strum(serialize = "Ask Each Time")]
+    Ask,
 }
 
 #[derive(

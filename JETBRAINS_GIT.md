@@ -37,7 +37,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Staged / unstaged diff | File right-click → Staged Changes / Unstaged Changes; or Group By → Staged & Unstaged (JetBrains "Enable staging area") |
 | Branch widget | Title bar, top-left (`⎇ main ⌄`); ⌘⇧` also opens it. Tabs Branches · Stashes · Worktrees (⌘1/⌘2/⌘3) |
 | Branch actions | Branch widget → click a branch (or ↵): Checkout, New Branch from, Checkout and Rebase onto, Compare with, Show Diff with Working Tree, Rebase onto, Merge into, Update, Push, Rename, Delete; remote branches also Pull Using Merge/Rebase and Fetch. ⌘↵ checks out directly. A branch checked out in another worktree offers "Open in New Tab" for that worktree. Same menu on right-click in the Log's Branches pane |
-| Project tabs | Each project opens in its own window, grouped as tabs at the top (`"use_system_window_tabs": true` with `"default_open_behavior": "new_window"` in user settings) |
+| Project tabs / Open Project | `"default_open_behavior": "ask"` asks "This Window / New Tab / Cancel" on File → Open, Recent Projects and worktree switching (⌘↵ in Recent Projects skips the question). New windows join as tabs at the top with `"use_system_window_tabs": true` |
 | Switch worktree | Branch widget → Worktrees tab (⌘3): pick one to switch, type a name to create; also command palette "git: worktree" |
 | Stash / Unstash | Git panel `…` menu → Stash Changes… / Unstash Changes… |
 | Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
@@ -111,3 +111,4 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | branches | Branch popup: clicking a branch opens the JetBrains branch actions menu (shared with the Log's Branches pane in `branch_actions.rs`), adds Update, Push, Fetch and Pull into current; project tabs via system window tabs; Threads sidebar no longer disabled (branch picker test) |
 | 2026-09-30 | worktrees | Checkout of a branch used by another worktree offers "Open in New Tab" (opens that worktree as a window tab); parser test |
 | 2026-10-01 | install | Installed as `/Applications/Zed.app` (name and bundle id of the stock Zed) instead of `Zed JetBrains.app`; icon generated from `app-icon@2x.png` |
+| 2026-10-01 | open | `default_open_behavior: "ask"`: This Window / New Tab prompt on Open, Recent Projects and worktree switch (workspace prompt test) |

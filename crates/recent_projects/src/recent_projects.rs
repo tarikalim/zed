@@ -392,7 +392,7 @@ pub fn init(cx: &mut App) {
             add_wsl_distro(fs, &open_wsl.distro, cx);
             let requesting_window =
                 match workspace::WorkspaceSettings::get_global(cx).default_open_behavior {
-                    DefaultOpenBehavior::ExistingWindow => {
+                    DefaultOpenBehavior::ExistingWindow | DefaultOpenBehavior::Ask => {
                         window.window_handle().downcast::<MultiWorkspace>()
                     }
                     DefaultOpenBehavior::NewWindow => None,
@@ -2158,6 +2158,26 @@ impl RecentProjectsDelegate {
             match candidate_workspace_location {
                 SerializedWorkspaceLocation::Local => {
                     let paths = candidate_workspace_paths.paths().to_vec();
+                    // "ask": secondary (cmd-enter) still forces a new window without asking.
+                    let asks = !secondary
+                        && workspace::WorkspaceSettings::get_global(cx).default_open_behavior
+                            == DefaultOpenBehavior::Ask;
+                    if asks {
+                        let mode = workspace::resolve_default_open_mode(window, cx);
+                        cx.spawn_in(window, async move |workspace, cx| {
+                            let Some(mode) = mode.await else {
+                                return anyhow::Ok(());
+                            };
+                            workspace
+                                .update_in(cx, |workspace, window, cx| {
+                                    workspace.open_workspace_for_paths(mode, paths, window, cx)
+                                })?
+                                .await?;
+                            anyhow::Ok(())
+                        })
+                        .detach_and_log_err(cx);
+                        return;
+                    }
                     if replace_current_window {
                         if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
                             cx.defer(move |cx| {

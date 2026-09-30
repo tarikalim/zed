@@ -134,9 +134,42 @@ pub fn init(cx: &mut App) {
         );
         workspace.register_action(
             |workspace, action: &zed_actions::SwitchWorktree, window, cx| {
-                git_ui_core::worktree_service::handle_switch_worktree(
-                    workspace, action, window, None, cx,
-                );
+                // Only "ask" changes worktree switching; the other settings keep switching in place.
+                if <workspace::WorkspaceSettings as settings::Settings>::get_global(cx).default_open_behavior
+                    != settings::DefaultOpenBehavior::Ask
+                {
+                    git_ui_core::worktree_service::handle_switch_worktree(
+                        workspace, action, window, None, cx,
+                    );
+                    return;
+                }
+                let mode = workspace::resolve_default_open_mode(window, cx);
+                let action = action.clone();
+                cx.spawn_in(window, async move |workspace, cx| {
+                    let Some(mode) = mode.await else {
+                        return anyhow::Ok(());
+                    };
+                    let task = workspace.update_in(cx, |workspace, window, cx| {
+                        if mode == workspace::OpenMode::NewWindow {
+                            Some(workspace.open_workspace_for_paths(
+                                mode,
+                                vec![action.path.clone()],
+                                window,
+                                cx,
+                            ))
+                        } else {
+                            git_ui_core::worktree_service::handle_switch_worktree(
+                                workspace, &action, window, None, cx,
+                            );
+                            None
+                        }
+                    })?;
+                    if let Some(task) = task {
+                        task.await?;
+                    }
+                    anyhow::Ok(())
+                })
+                .detach_and_log_err(cx);
             },
         );
 
