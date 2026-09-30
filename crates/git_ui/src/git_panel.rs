@@ -1174,6 +1174,8 @@ pub struct GitPanel {
     pending_commit: Option<Task<()>>,
     push_after_commit: bool,
     changelists: changelists::Changelists,
+    grouped_by_changelist: bool,
+    unversioned_count: usize,
     rebasing: bool,
     shelf: Vec<shelf::ShelvedChangelist>,
     expanded_shelves: HashSet<std::path::PathBuf>,
@@ -1494,6 +1496,8 @@ impl GitPanel {
                 pending_commit: None,
                 push_after_commit: false,
                 changelists: Default::default(),
+                grouped_by_changelist: false,
+                unversioned_count: 0,
                 rebasing: false,
                 shelf: Vec::new(),
                 expanded_shelves: HashSet::default(),
@@ -5710,6 +5714,8 @@ impl GitPanel {
                 self.changelists = changelists::Changelists::load(git_dir);
             }
         }
+        self.unversioned_count = 0;
+        self.grouped_by_changelist = group_by_changelist;
         let mut changelist_entries: Vec<Vec<GitStatusEntry>> =
             vec![Vec::new(); self.changelists.lists.len()];
         self.changelist_counts = vec![(0, 0); self.changelists.lists.len()];
@@ -5762,6 +5768,10 @@ impl GitPanel {
                 }
             } else if group_by_changelist && is_conflict {
                 conflict_entries.push(entry);
+            } else if group_by_changelist && entry.status.is_untracked() {
+                // JetBrains keeps untracked files out of changelists, under "Unversioned Files".
+                self.unversioned_count += 1;
+                new_entries.push(entry);
             } else if group_by_changelist {
                 let index = self.changelists.list_of(&entry.repo_path);
                 if let (Some(entries), Some(counts)) = (
@@ -5873,6 +5883,7 @@ impl GitPanel {
                         .enumerate()
                         .map(|(index, entries)| (Section::Changelist(index as u16), entries)),
                 )
+                .chain(std::iter::once((Section::New, std::mem::take(&mut new_entries))))
                 .collect()
         } else if group_by_staging_state {
             vec![
@@ -6054,14 +6065,18 @@ impl GitPanel {
         match section {
             Section::Changelist(index) => {
                 !repo.had_conflict_on_last_merge_head_change(&entry.repo_path)
+                    && !entry.status.is_untracked()
                     && self.changelists.list_of(&entry.repo_path) == index as usize
             }
+            Section::New if self.grouped_by_changelist => entry.status.is_untracked(),
             section => GitHeaderEntry { header: section }.contains(entry, repo),
         }
     }
 
     fn header_state(&self, header_type: Section) -> ToggleState {
         let (staged_count, count) = match header_type {
+            // Untracked files are never staged; staging one moves it into a changelist.
+            Section::New if self.grouped_by_changelist => (0, self.unversioned_count),
             Section::New => (self.new_staged_count, self.new_count),
             Section::Tracked => (self.tracked_staged_count, self.tracked_count),
             Section::Conflict => (self.conflicted_staged_count, self.conflicted_count),
@@ -8665,6 +8680,12 @@ impl GitPanel {
                                 )
                                 .into_any_element()
                         }
+                        Section::New if self.grouped_by_changelist => {
+                            Label::new("Unversioned Files")
+                                .color(Color::Muted)
+                                .size(LabelSize::Small)
+                                .into_any_element()
+                        }
                         _ => Label::new(header.title())
                             .color(Color::Muted)
                             .size(LabelSize::Small)
@@ -11244,6 +11265,60 @@ mod tests {
             commit_history_from_response(no_entries.clone(), false, None),
             CommitHistory::Loaded(no_entries)
         );
+    }
+
+    #[gpui::test]
+    async fn test_changelist_grouping_puts_untracked_under_unversioned(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().group_by =
+                        Some(GitPanelGroupBy::Changelist);
+                });
+            });
+        });
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            "/root",
+            json!({ "repo": { ".git": {}, "changed.rs": "a", "new.rs": "b" } }),
+        )
+        .await;
+        fs.set_status_for_repo(
+            Path::new(path!("/root/repo/.git")),
+            &[
+                ("changed.rs", StatusCode::Modified.worktree()),
+                ("new.rs", FileStatus::Untracked),
+            ],
+        );
+        let project = Project::test(fs.clone(), [path!("/root/repo").as_ref()], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(window_handle.into(), cx);
+        cx.executor().run_until_parked();
+
+        let panel = workspace.update_in(cx, GitPanel::new);
+        let handle = cx.update_window_entity(&panel, |panel, _, _| {
+            std::mem::replace(&mut panel.update_visible_entries_task, Task::ready(()))
+        });
+        cx.executor().advance_clock(2 * UPDATE_DEBOUNCE);
+        handle.await;
+
+        let layout: Vec<String> = panel.read_with(cx, |panel, _| {
+            panel
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    GitListEntry::Header(header) => format!("{:?}", header.header),
+                    GitListEntry::Status(status) => status.repo_path.as_unix_str().to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect()
+        });
+        pretty_assertions::assert_eq!(layout, ["Changelist(0)", "changed.rs", "New", "new.rs"]);
     }
 
     #[gpui::test]
