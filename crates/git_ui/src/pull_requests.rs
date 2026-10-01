@@ -1,5 +1,10 @@
+use crate::branch_diff::BranchDiff;
 use anyhow::Context as _;
 use editor::Editor;
+use git::{
+    repository::RepoPath,
+    status::{FileStatus, StatusCode, TrackedStatus},
+};
 use gpui::{
     Action, App, AsyncWindowContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
     PromptLevel, Render, SharedString, Task, WeakEntity, Window, px,
@@ -181,10 +186,13 @@ struct PullRequestSummary {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChangedFile {
     path: String,
     additions: u64,
     deletions: u64,
+    #[serde(default)]
+    change_type: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -210,6 +218,12 @@ struct PullRequestDetails {
     title: String,
     body: String,
     url: String,
+    #[serde(default)]
+    head_ref_name: String,
+    #[serde(default)]
+    base_ref_name: String,
+    #[serde(default)]
+    head_ref_oid: String,
     #[serde(default)]
     files: Vec<ChangedFile>,
     #[serde(default)]
@@ -401,7 +415,7 @@ impl PullRequestsView {
                 "view".into(),
                 number.to_string(),
                 "--json".into(),
-                "number,title,body,url,files,comments,reviews,additions,deletions".into(),
+                "number,title,body,url,headRefName,baseRefName,headRefOid,files,comments,reviews,additions,deletions".into(),
             ],
             cx,
         );
@@ -479,6 +493,73 @@ impl PullRequestsView {
             }
         })
         .detach();
+    }
+
+    /// Opens the pull request's changes as a branch diff over the working tree,
+    /// so the files are real project buffers with code navigation.
+    fn open_changes(&mut self, file: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((details, _)) = &self.details else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let Some(repository) = self
+            .project
+            .read(cx)
+            .repositories(cx)
+            .values()
+            .find(|repository| repository.read(cx).work_directory_abs_path.as_ref() == self.directory)
+            .cloned()
+        else {
+            return;
+        };
+        let file = file.and_then(|index| details.files.get(index)).and_then(|file| {
+            let code = if file.change_type == "ADDED" { StatusCode::Added } else { StatusCode::Modified };
+            let status = FileStatus::Tracked(TrackedStatus { index_status: code, worktree_status: code });
+            Some((RepoPath::new(&file.path).log_err()?, status))
+        });
+        let snapshot = repository.read(cx);
+        let remote_base = format!("origin/{}", details.base_ref_name);
+        let base_ref: SharedString = if snapshot.branch_list.iter().any(|branch| branch.name() == remote_base) {
+            remote_base.into()
+        } else {
+            details.base_ref_name.clone().into()
+        };
+        let checked_out = snapshot.branch.as_ref().is_some_and(|branch| branch.name() == details.head_ref_name)
+            || snapshot.head_commit.as_ref().is_some_and(|commit| commit.sha.as_ref() == details.head_ref_oid);
+        if checked_out {
+            // Deferred: adding a tab reads the active item, which is this view.
+            window.defer(cx, move |window, cx| {
+                BranchDiff::open_at_file(&workspace, repository, base_ref, file, window, cx);
+            });
+            return;
+        }
+
+        let number = details.number;
+        let directory = self.directory.clone();
+        let answer = window.prompt(
+            PromptLevel::Info,
+            &format!("Pull request #{number} is not checked out"),
+            Some("Check it out to browse its changes with code navigation, or view the plain patch."),
+            &["Checkout", "Show Patch", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            match answer.await {
+                Ok(0) => {
+                    cx.update(|_, cx| gh(directory, vec!["pr".into(), "checkout".into(), number.to_string()], cx))?
+                        .await?;
+                    cx.update(|window, cx| {
+                        BranchDiff::open_at_file(&workspace, repository, base_ref, file, window, cx);
+                    })?;
+                }
+                Ok(1) => this.update_in(cx, |this, window, cx| this.show_diff(window, cx))?,
+                _ => {}
+            }
+            anyhow::Ok(())
+        })
+        .detach_and_prompt_err("Checkout failed", window, cx, |_, _, _| None);
     }
 
     fn show_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -685,7 +766,7 @@ impl PullRequestsView {
                             cx,
                         )
                     })))
-                    .child(Button::new("pr-diff", "Show Diff").on_click(cx.listener(|this, _, window, cx| this.show_diff(window, cx))))
+                    .child(Button::new("pr-diff", "Show Diff").on_click(cx.listener(|this, _, window, cx| this.open_changes(None, window, cx))))
                     .child(Button::new("pr-approve", "Approve").on_click(cx.listener(|this, _, window, cx| {
                         this.run_on_selected(
                             |number| vec!["pr".into(), "review".into(), number.to_string(), "--approve".into()],
@@ -722,9 +803,14 @@ impl PullRequestsView {
                 .size(LabelSize::Small)
                 .color(Color::Muted),
             )
-            .children(details.files.iter().map(|file| {
+            .children(details.files.iter().enumerate().map(|(index, file)| {
                 h_flex()
+                    .id(("pull-request-file", index))
                     .gap_2()
+                    .rounded_sm()
+                    .hover(|this| this.bg(colors.element_hover))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_changes(Some(index), window, cx)))
                     .child(Label::new(file.path.clone()).size(LabelSize::Small).truncate())
                     .child(Label::new(format!("+{}", file.additions)).size(LabelSize::XSmall).color(Color::Created))
                     .child(Label::new(format!("−{}", file.deletions)).size(LabelSize::XSmall).color(Color::Deleted))
@@ -857,6 +943,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(details.files[0].path, "Cargo.lock");
+        assert_eq!(details.files[0].change_type, "MODIFIED");
         assert_eq!(details.reviews[0].state, "APPROVED");
         assert_eq!(details.comments[0].body, "LGTM");
     }
@@ -905,6 +992,18 @@ mod panel_tests {
             list.update_in(cx, |list, window, cx| list.open_details(7, window, cx));
             cx.run_until_parked();
         }
+        let repository = project.read_with(cx, |project, cx| project.active_repository(cx)).unwrap();
+        for _ in 0..2 {
+            let file = (RepoPath::new("a.txt").unwrap(), FileStatus::Untracked);
+            cx.update(|window, cx| {
+                BranchDiff::open_at_file(&workspace, repository.clone(), "origin/main".into(), Some(file), window, cx)
+            });
+            cx.run_until_parked();
+        }
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<BranchDiff>(cx).count(), 1);
+        });
+
         workspace.read_with(cx, |workspace, cx| {
             let titles: Vec<SharedString> = workspace
                 .items_of_type::<PullRequestsView>(cx)

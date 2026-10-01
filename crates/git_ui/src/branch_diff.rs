@@ -1,6 +1,6 @@
 use crate::{
     branch_picker,
-    diff_multibuffer::DiffMultibuffer,
+    diff_multibuffer::{DiffMultibuffer, project_diff_path_key},
     project_diff::{
         self, CompareWithBranch, DeployBranchDiff, ProjectDiff, ReviewDiff,
         render_send_review_to_agent_button,
@@ -12,7 +12,10 @@ use editor::{
     Addon, Editor, EditorEvent, HiddenDiffHunkRenderer, SplittableEditor,
     actions::SendReviewToAgent,
 };
-use git::{repository::DiffType, status::FileStatus};
+use git::{
+    repository::{DiffType, RepoPath},
+    status::FileStatus,
+};
 use gpui::{
     Action, App, AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, Render,
     SharedString, Subscription, Task, WeakEntity,
@@ -243,6 +246,62 @@ impl BranchDiff {
                 anyhow::Ok(())
             })
             .detach_and_notify_err(workspace_weak, window, cx);
+    }
+
+    /// Opens (or reuses) the diff against `base_ref`, scrolled to `file` when given.
+    /// Must not be called while the workspace is being updated.
+    pub(crate) fn open_at_file(
+        workspace: &Entity<Workspace>,
+        repository: Entity<Repository>,
+        base_ref: SharedString,
+        file: Option<(RepoPath, FileStatus)>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let existing = workspace.read(cx).items_of_type::<Self>(cx).find(|item| {
+            let item = item.read(cx);
+            matches!(
+                item.diff_base(cx),
+                DiffBase::Merge { base_ref: existing_base_ref } if existing_base_ref == &base_ref
+            ) && item
+                .repo(cx)
+                .is_some_and(|repo| repo.read(cx).id == repository.read(cx).id)
+        });
+        let branch_diff = existing.clone().unwrap_or_else(|| {
+            let project = workspace.read(cx).project().clone();
+            cx.new(|cx| {
+                Self::new_with_base_ref(
+                    project,
+                    workspace.clone(),
+                    base_ref,
+                    Some(repository.clone()),
+                    None,
+                    window,
+                    cx,
+                )
+            })
+        });
+        workspace.update(cx, |workspace, cx| {
+            if existing.is_some() {
+                workspace.activate_item(&branch_diff, true, true, window, cx);
+            } else {
+                workspace.add_item_to_active_pane(
+                    Box::new(branch_diff.clone()),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+            }
+        });
+        if let Some((repo_path, status)) = file {
+            let path_key = project_diff_path_key(repository.read(cx), &repo_path, status, cx);
+            branch_diff.update(cx, |branch_diff, cx| {
+                branch_diff
+                    .diff
+                    .update(cx, |diff, cx| diff.move_to_path(path_key, window, cx));
+            });
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
