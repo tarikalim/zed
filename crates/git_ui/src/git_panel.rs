@@ -4625,6 +4625,8 @@ impl GitPanel {
         }
 
         telemetry::event!("Git Pulled");
+        let head_before = repo.read(cx).head_commit.as_ref().map(|commit| commit.sha.to_string());
+        let workspace = self.workspace.clone();
         let remote = self.get_remote(false, false, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let _clear_pending_remote_operation = cx.on_drop(&this, |this, cx| {
@@ -4660,14 +4662,18 @@ impl GitPanel {
             let remote_message = pull.await?;
 
             let action = RemoteAction::Pull(remote);
-            this.update(cx, |this, cx| match remote_message {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+            match remote_message {
+                Ok(_) => {
+                    crate::branch_actions::report_update(&repo, &workspace, head_before, "HEAD", cx)
+                        .await
+                        .log_err();
+                }
                 Err(e) => {
                     log::error!("Error while pulling {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+                    this.update(cx, |this, cx| this.show_error_toast(action.name(), e, cx))
+                        .ok();
                 }
-            })
-            .ok();
+            }
 
             anyhow::Ok(())
         })

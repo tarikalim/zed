@@ -43,7 +43,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 | Shelf | Git panel "Shelf" tab; Shelve Changes… on files and changelists |
 | Conflicts / Merge Revisions | Opens after a conflicting merge/rebase/cherry-pick; "Resolve" on the Conflicts header |
 | Interactive rebase | Log right-click → Interactively Rebase from Here…; Continue/Abort bar in the git panel |
-| Pull Requests tool window | ⌘8 (left dock, list with search and state filter); clicking a PR opens "Pull Request #N" as an editor tab with the actions |
+| Pull Requests tool window | ⌘8 (left dock, list with search and state filter); clicking a PR opens "Pull Request #N" as an editor tab with the actions; clicking a changed file (or Show Diff) opens the PR's changes as a diff over the working tree, with go to definition / find references (the PR branch must be checked out; otherwise it offers Checkout or the plain patch) |
 | Search Everywhere (Shift Shift) | `crates/search_everywhere`: tabs All · Classes · Files · Symbols · Actions · Text; ⇥ / ⇧⇥ switch tabs, pressing the same shortcut again moves to the next tab |
 | Move a tool window (Move To) | Right-click the panel's icon in the status bar → Dock Left / Right / Bottom (no drag and drop) |
 
@@ -55,7 +55,7 @@ Commit graph with search and details pane · git panel with per-file checkboxes,
 
 - User, date and path Log filters show a linear list without graph lines (git does not rewrite parents for them).
 - Merge tool: per-chunk controls are in the Result pane, not as arrows in the side panes.
-- Pull Requests is a tab, without per-file inline review comments; no Console tab in the Git tool window.
+- Pull Requests is a tab, without per-file inline review comments; the file diff needs the PR branch checked out (JetBrains also diffs without checkout); no Console tab in the Git tool window.
 - Tool windows move by right-click, not drag and drop; Project/Outline panels only dock left or right.
 - New write actions are local-only (disabled in remote/SSH projects).
 
@@ -112,3 +112,5 @@ Each step: build → run the fork → try it in the real app → show Tarık →
 | 2026-09-30 | worktrees | Checkout of a branch used by another worktree offers "Open in New Tab" (opens that worktree as a window tab); parser test |
 | 2026-10-01 | install | Installed as `/Applications/Zed.app` (name and bundle id of the stock Zed) instead of `Zed JetBrains.app`; icon generated from `app-icon@2x.png` |
 | 2026-10-01 | open | `default_open_behavior: "ask"`: This Window / New Tab prompt on Open, Recent Projects and worktree switch (workspace prompt test) |
+| 2026-10-01 | PR diff | Changed files in a pull request are clickable: opens the branch diff against `origin/<base>` at that file, real buffers so code navigation works; not checked out → Checkout / Show Patch prompt (`BranchDiff::open_at_file`, panel test) |
+| 2026-10-01 | update | Update / Pull / Fetch from the branch menu and ⌘T report the result as a bottom-right notification, JetBrains wording ("3 files updated in 2 commits", "All files are up to date"); `report_update` in `branch_actions.rs` (message test). After a rebase pull the count includes the rewritten local commits |

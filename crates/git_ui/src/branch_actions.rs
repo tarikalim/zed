@@ -3,12 +3,72 @@
 use std::rc::Rc;
 
 use git::Oid;
-use gpui::{App, Entity, PromptLevel, SharedString, WeakEntity, Window};
+use gpui::{App, AsyncWindowContext, Entity, PromptLevel, SharedString, WeakEntity, Window};
 use project::git_store::Repository;
 use ui::{ContextMenu, ContextMenuEntry, prelude::*};
-use workspace::Workspace;
+use util::ResultExt as _;
+use workspace::{Toast, Workspace, notifications::NotificationId};
 
 use crate::{branch_diff::BranchDiff, log_actions};
+
+async fn git_output(
+    repository: &Entity<Repository>,
+    args: &[&str],
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<String> {
+    let args = args.iter().map(|arg| arg.to_string()).collect();
+    let receiver = repository.update(cx, |repository, cx| repository.run_git_command(args, cx));
+    Ok(receiver.await??.trim().to_string())
+}
+
+/// JetBrains wording for the Update Project notification.
+fn update_message(commits: u32, shortstat: &str) -> String {
+    let plural = |count: u32| if count == 1 { "" } else { "s" };
+    let files: u32 = shortstat
+        .split_whitespace()
+        .next()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0);
+    match (commits, files) {
+        (0, _) => "All files are up to date".into(),
+        (commits, 0) => format!("{commits} commit{} received", plural(commits)),
+        (commits, files) => format!(
+            "{files} file{} updated in {commits} commit{}",
+            plural(files),
+            plural(commits)
+        ),
+    }
+}
+
+/// Shows what `reference` gained since `before` as a bottom-right notification.
+// ponytail: after a rebase pull the count includes the rewritten local commits.
+pub(crate) async fn report_update(
+    repository: &Entity<Repository>,
+    workspace: &WeakEntity<Workspace>,
+    before: Option<String>,
+    reference: &str,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<()> {
+    let after = git_output(repository, &["rev-parse", reference], cx).await?;
+    let message = match before {
+        Some(before) if before != after => {
+            let range = format!("{before}..{after}");
+            let commits = git_output(repository, &["rev-list", "--count", &range], cx).await?;
+            let shortstat =
+                git_output(repository, &["diff", "--shortstat", &before, &after], cx).await?;
+            update_message(commits.parse().unwrap_or(0), &shortstat)
+        }
+        Some(_) => update_message(0, ""),
+        None => "Updated".into(),
+    };
+    struct UpdateToast;
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_toast(
+            Toast::new(NotificationId::unique::<UpdateToast>(), message).autohide(),
+            cx,
+        );
+    })
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RefKind {
@@ -67,6 +127,42 @@ pub(crate) fn branch_actions_menu(
                 let receiver = repository
                     .update(cx, |repository, cx| repository.run_git_command(args.clone(), cx));
                 log_actions::spawn_git_job(receiver, error, window, cx);
+            }
+        }
+    };
+    // Like `git`, then reports what `reference` gained.
+    let update = {
+        let repository = repository.clone();
+        let workspace = workspace.clone();
+        move |args: Vec<String>, reference: String, error_title: &'static str| {
+            let repository = repository.clone();
+            let workspace = workspace.clone();
+            move |window: &mut Window, cx: &mut App| {
+                let Some(repository) = repository.upgrade() else {
+                    return;
+                };
+                let (args, reference, workspace) =
+                    (args.clone(), reference.clone(), workspace.clone());
+                window
+                    .spawn(cx, async move |cx| {
+                        let before =
+                            git_output(&repository, &["rev-parse", &reference], cx).await.ok();
+                        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                        match git_output(&repository, &args, cx).await {
+                            Ok(_) => {
+                                report_update(&repository, &workspace, before, &reference, cx)
+                                    .await
+                                    .log_err();
+                            }
+                            Err(error) => {
+                                cx.update(|window, cx| {
+                                    log_actions::show_git_error(error, error_title, window, cx)
+                                })
+                                .ok();
+                            }
+                        }
+                    })
+                    .detach();
             }
         }
     };
@@ -161,21 +257,23 @@ pub(crate) fn branch_actions_menu(
             menu.entry(
                 format!("Pull into '{current_label}' Using Merge"),
                 None,
-                git(
+                update(
                     vec![
                         "pull".into(),
                         "--no-edit".into(),
                         remote.into(),
                         branch.into(),
                     ],
+                    "HEAD".into(),
                     "Pull failed",
                 ),
             )
             .entry(
                 format!("Pull into '{current_label}' Using Rebase"),
                 None,
-                git(
+                update(
                     vec!["pull".into(), "--rebase".into(), remote.into(), branch.into()],
+                    "HEAD".into(),
                     "Pull failed",
                 ),
             )
@@ -183,7 +281,11 @@ pub(crate) fn branch_actions_menu(
             .entry(
                 "Fetch",
                 None,
-                git(vec!["fetch".into(), remote.into(), branch.into()], "Fetch failed"),
+                update(
+                    vec!["fetch".into(), remote.into(), branch.into()],
+                    name.to_string(),
+                    "Fetch failed",
+                ),
             )
         })
         .when(is_local, |menu| {
@@ -208,7 +310,11 @@ pub(crate) fn branch_actions_menu(
                 .item(
                     ContextMenuEntry::new("Update")
                         .disabled(update_args.is_none())
-                        .handler(git(update_args.unwrap_or_default(), "Update failed")),
+                        .handler(update(
+                            update_args.unwrap_or_default(),
+                            if is_current { "HEAD".into() } else { name.to_string() },
+                            "Update failed",
+                        )),
                 )
                 .entry("Push", None, git(push_args, "Push failed"))
         })
@@ -283,5 +389,21 @@ impl EntryWhen for ContextMenu {
         handler: impl Fn(&mut Window, &mut App) + 'static,
     ) -> Self {
         self.item(ContextMenuEntry::new(label).disabled(!enabled).handler(handler))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_message;
+
+    #[test]
+    fn test_update_message() {
+        assert_eq!(update_message(0, ""), "All files are up to date");
+        assert_eq!(
+            update_message(2, "3 files changed, 10 insertions(+), 2 deletions(-)"),
+            "3 files updated in 2 commits"
+        );
+        assert_eq!(update_message(1, "1 file changed, 1 insertion(+)"), "1 file updated in 1 commit");
+        assert_eq!(update_message(1, ""), "1 commit received");
     }
 }
